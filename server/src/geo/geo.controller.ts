@@ -1,7 +1,13 @@
-import { Controller, Get, Query } from '@nestjs/common';
-import { PoiQueryDto, RouteQueryDto } from './dto/geo-query.dto.js';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
+import {
+  PoiQueryDto,
+  RouteQueryDto,
+  RoutesBodyDto,
+} from './dto/geo-query.dto.js';
 import { GeoService } from './geo.service.js';
 
+@UseGuards(JwtAuthGuard)
 @Controller('geo')
 export class GeoController {
   constructor(private readonly geo: GeoService) {}
@@ -15,5 +21,10 @@ export class GeoController {
   @Get('route')
   route(@Query() query: RouteQueryDto) {
     return this.geo.route(query.from, query.to, query.mode);
+  }
+
+  @Post('routes')
+  routes(@Body() body: RoutesBodyDto) {
+    return this.geo.routes(body.points, body.mode);
   }
 }

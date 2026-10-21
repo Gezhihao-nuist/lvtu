@@ -23,9 +23,54 @@ export interface GeoRoute {
 
 export type RouteMode = 'walking' | 'driving' | 'transit';
 
+export interface RouteSegment extends GeoRoute {
+  mode: RouteMode;
+  /** true 表示该段规划失败,polyline 为两点直线兜底 */
+  fallback: boolean;
+}
+
+export interface RoutesResult {
+  segments: RouteSegment[];
+  totalDistance: number;
+  totalDuration: number;
+}
+
 interface CacheEntry {
   data: unknown;
   expireAt: number;
+}
+
+/** 两点球面直线距离(米) */
+function haversineMeters(
+  a: { lng: number; lat: number },
+  b: { lng: number; lat: number },
+): number {
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad;
+  const dLng = (b.lng - a.lng) * rad;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(s));
+}
+
+/** 带下标的并发限制 map,规避高德个人 Key 的 QPS 限制 */
+async function mapLimitIdx<T>(
+  arr: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let i = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, arr.length) },
+    async () => {
+      while (i < arr.length) {
+        const idx = i++;
+        await fn(arr[idx] as T, idx);
+      }
+    },
+  );
+  await Promise.all(workers);
 }
 
 @Injectable()
@@ -81,6 +126,44 @@ export class GeoService {
     const route = this.parseRoute(data, mode);
     this.setCached(cacheKey, route);
     return route;
+  }
+
+  /** 批量路径规划:途经点串成逐段路径;auto 模式按直线距离 <2.5km 选步行,否则驾车;失败段回退直线 */
+  async routes(
+    points: { lng: number; lat: number }[],
+    mode: 'walking' | 'driving' | 'transit' | 'auto' = 'auto',
+  ): Promise<RoutesResult> {
+    const pairs = points
+      .slice(0, -1)
+      .map((p, i) => [p, points[i + 1]!] as const);
+    const segments: RouteSegment[] = new Array<RouteSegment>(pairs.length);
+    await mapLimitIdx(pairs, 2, async ([a, b], idx) => {
+      const from = `${a.lng},${a.lat}`;
+      const to = `${b.lng},${b.lat}`;
+      const resolvedMode: RouteMode =
+        mode === 'auto'
+          ? haversineMeters(a, b) < 2500
+            ? 'walking'
+            : 'driving'
+          : mode;
+      try {
+        const r = await this.route(from, to, resolvedMode);
+        segments[idx] = { ...r, mode: resolvedMode, fallback: false };
+      } catch {
+        segments[idx] = {
+          distance: 0,
+          duration: 0,
+          polyline: `${from};${to}`,
+          mode: resolvedMode,
+          fallback: true,
+        };
+      }
+    });
+    return {
+      segments,
+      totalDistance: segments.reduce((s, x) => s + (x.fallback ? 0 : x.distance), 0),
+      totalDuration: segments.reduce((s, x) => s + (x.fallback ? 0 : x.duration), 0),
+    };
   }
 
   private parseRoute(data: any, mode: RouteMode): GeoRoute {

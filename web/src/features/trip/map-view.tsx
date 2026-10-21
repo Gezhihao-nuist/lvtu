@@ -11,6 +11,7 @@ import {
   type AMapNamespace,
   type AMapPolyline,
 } from '../../lib/amap'
+import { api } from '../../lib/api'
 import type { ItineraryItem, TripDay } from '../../types'
 import { ITEM_TYPE_META } from './item-meta'
 
@@ -26,6 +27,25 @@ function withCoords(day: TripDay | undefined): CoordItem[] {
   return (day?.items ?? [])
     .filter((i): i is CoordItem => i.lng != null && i.lat != null)
     .sort((a, b) => a.orderIndex - b.orderIndex)
+}
+
+/** 后端 /geo/routes 返回的单段 */
+interface RouteSegmentDto {
+  distance: number
+  duration: number
+  polyline: string
+  mode: string
+  fallback: boolean
+}
+
+/** 'lng,lat;lng,lat' → [[lng,lat],…] */
+function parsePolyline(s: string): [number, number][] {
+  const out: [number, number][] = []
+  for (const pair of s.split(';')) {
+    const [lng, lat] = pair.split(',').map(Number)
+    if (Number.isFinite(lng) && Number.isFinite(lat)) out.push([lng, lat])
+  }
+  return out
 }
 
 /** 自定义 marker:圆形白底 + 类型图标 + 序号 */
@@ -116,9 +136,12 @@ export function MapView({ day, destination, hoveredItemId }: MapViewProps) {
   const amapRef = useRef<AMapNamespace | null>(null)
   const mapRef = useRef<AMapMapInstance | null>(null)
   const markersRef = useRef<Array<{ id: string; item: CoordItem; index: number; marker: AMapMarker }>>([])
-  const polylineRef = useRef<AMapPolyline | null>(null)
+  const polylinesRef = useRef<AMapPolyline[]>([])
+  const routeGenRef = useRef(0)
+  const routeCacheRef = useRef(new Map<string, [number, number][][]>())
   const [mapReady, setMapReady] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [routing, setRouting] = useState(false)
 
   const coordItems = withCoords(day)
   const coordKey = coordItems.map((i) => `${i.id}:${i.lng},${i.lat}:${i.orderIndex}`).join('|')
@@ -157,8 +180,8 @@ export function MapView({ day, destination, hoveredItemId }: MapViewProps) {
 
     for (const { marker } of markersRef.current) marker.setMap(null)
     markersRef.current = []
-    polylineRef.current?.setMap(null)
-    polylineRef.current = null
+    for (const line of polylinesRef.current) line.setMap(null)
+    polylinesRef.current = []
 
     const markers = coordItems.map((item, index) => {
       const marker = new AMap.Marker({
@@ -173,17 +196,65 @@ export function MapView({ day, destination, hoveredItemId }: MapViewProps) {
     markersRef.current = markers
 
     if (coordItems.length > 1) {
-      const line = new AMap.Polyline({
-        path: coordItems.map((i) => [i.lng, i.lat]),
-        strokeColor: '#0d9488',
-        strokeWeight: 4,
-        strokeOpacity: 0.7,
-        lineJoin: 'round',
-        lineCap: 'round',
-      })
-      line.setMap(map)
-      polylineRef.current = line
-      map.setFitView([...markers.map((m) => m.marker), line], false, [48, 48, 48, 48])
+      map.setFitView(markers.map((m) => m.marker), false, [48, 48, 48, 48])
+
+      // 后端批量路径规划(auto:近=步行,远=驾车),返回真实道路路径,虚线绘制
+      const gen = ++routeGenRef.current
+      setRouting(true)
+      const drawLines = (pathsArr: [number, number][][]) => {
+        if (gen !== routeGenRef.current) return
+        const currentMap = mapRef.current
+        if (!currentMap) return
+        const lines = pathsArr.map(
+          (path) =>
+            new AMap.Polyline({
+              path,
+              strokeColor: '#0d9488',
+              strokeWeight: 4,
+              strokeOpacity: 0.75,
+              strokeStyle: 'dashed',
+              strokeDasharray: [9, 9],
+              lineJoin: 'round',
+              lineCap: 'round',
+              zIndex: 50,
+            }),
+        )
+        for (const line of lines) line.setMap(currentMap)
+        polylinesRef.current = lines
+      }
+      const straightPaths = coordItems
+        .slice(0, -1)
+        .map((item, idx) => {
+          const next = coordItems[idx + 1]
+          return next ? ([[item.lng, item.lat], [next.lng, next.lat]] as [number, number][]) : []
+        })
+        .filter((p) => p.length === 2)
+
+      const cached = routeCacheRef.current.get(coordKey)
+      if (cached) {
+        drawLines(cached)
+        setRouting(false)
+      } else {
+        void api<{ segments: RouteSegmentDto[] }>('/geo/routes', {
+          method: 'POST',
+          body: JSON.stringify({
+            points: coordItems.map((i) => ({ lng: i.lng, lat: i.lat })),
+            mode: 'auto',
+          }),
+        })
+          .then((res) => {
+            const pathsArr = res.segments.map((s) => parsePolyline(s.polyline))
+            routeCacheRef.current.set(coordKey, pathsArr)
+            drawLines(pathsArr)
+          })
+          .catch(() => {
+            // 接口异常时按原始顺序画直线兜底,保证图上始终有关联线
+            drawLines(straightPaths)
+          })
+          .finally(() => {
+            if (gen === routeGenRef.current) setRouting(false)
+          })
+      }
     } else if (coordItems.length === 1) {
       const only = coordItems[0]
       if (only) {
@@ -234,6 +305,12 @@ export function MapView({ day, destination, hoveredItemId }: MapViewProps) {
             <span className="size-4 animate-spin rounded-full border-2 border-zinc-200 border-t-accent-600" />
             地图加载中…
           </p>
+        </div>
+      )}
+      {mapReady && routing && (
+        <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-full bg-white/90 px-3 py-1.5 text-xs text-zinc-600 shadow-float backdrop-blur">
+          <span className="size-3 animate-spin rounded-full border-2 border-zinc-200 border-t-accent-600" />
+          路线规划中…
         </div>
       )}
     </div>
