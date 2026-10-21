@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Visibility {
+  PRIVATE
+  LINK
+  PUBLIC
+}
+
+enum ItemType {
+  SPOT
+  FOOD
+  HOTEL
+  TRANSPORT
+}
+
+enum CollabRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+model User {
+  id            String            @id @default(cuid())
+  email         String            @unique
+  passwordHash  String
+  nickname      String
+  avatarUrl     String?
+  createdAt     DateTime          @default(now())
+  trips         Trip[]
+  collaborators TripCollaborator[]
+  templates     TripTemplate[]
+  expenses      Expense[]
+}
+
+model Trip {
+  id              String            @id @default(cuid())
+  ownerId         String
+  owner           User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  title           String
+  destination     String
+  startDate       DateTime          @db.Date
+  endDate         DateTime          @db.Date
+  budgetTotal     Decimal?          @db.Decimal(10, 2)
+  coverUrl        String?
+  visibility      Visibility        @default(PRIVATE)
+  ydocState       Bytes?
+  days            TripDay[]
+  collaborators   TripCollaborator[]
+  expenses        Expense[]
+  aiConversations AiConversation[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([ownerId])
+}
+
+model TripDay {
+  id       String          @id @default(cuid())
+  tripId   String
+  trip     Trip            @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  dayIndex Int
+  date     DateTime        @db.Date
+  note     String?
+  items    ItineraryItem[]
+
+  @@unique([tripId, dayIndex])
+}
+
+model ItineraryItem {
+  id         String   @id @default(cuid())
+  dayId      String
+  day        TripDay  @relation(fields: [dayId], references: [id], onDelete: Cascade)
+  orderIndex Float
+  type       ItemType @default(SPOT)
+  title      String
+  poiId      String?
+  lng        Float?
+  lat        Float?
+  startTime  String?
+  endTime    String?
+  cost       Decimal? @db.Decimal(10, 2)
+  note       String?
+  rawAi      Json?
+
+  @@index([dayId])
+}
+
+model TripCollaborator {
+  tripId String
+  userId String
+  role   CollabRole @default(EDITOR)
+  trip   Trip       @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([tripId, userId])
+}
+
+model TripTemplate {
+  id           String   @id @default(cuid())
+  authorId     String
+  author       User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  sourceTripId String
+  title        String
+  summary      String?
+  coverUrl     String?
+  daysSnapshot Json
+  likeCount    Int      @default(0)
+  forkCount    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([authorId])
+}
+
+model Expense {
+  id        String   @id @default(cuid())
+  tripId    String
+  trip      Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  itemId    String?
+  payerId   String
+  payer     User     @relation(fields: [payerId], references: [id], onDelete: Cascade)
+  amount    Decimal  @db.Decimal(10, 2)
+  category  String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([tripId])
+}
+
+model AiConversation {
+  id        String   @id @default(cuid())
+  tripId    String
+  trip      Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([tripId])
+}

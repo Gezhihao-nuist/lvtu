@@ -1,0 +1,156 @@
+import { useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, CircleAlert, Pencil, Sparkles } from 'lucide-react'
+import { api } from '../../lib/api'
+import { formatDateRange } from '../../lib/format'
+import type { TripDetail } from '../../types'
+import { Button } from '../../components/ui/button'
+import { EmptyState } from '../../components/ui/empty-state'
+import { Spinner } from '../../components/ui/spinner'
+import { toast } from '../../components/ui/toast'
+import { DayTabs } from './day-tabs'
+import { Timeline } from './timeline'
+import { AiPanel } from './ai-panel'
+import { MapView } from './map-view'
+
+function InlineTitle({ tripId, value }: { tripId: string; value: string }) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+
+  const rename = useMutation({
+    mutationFn: (title: string) =>
+      api(`/trips/${tripId}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['trip', tripId] }),
+    onError: () => toast.error('改名失败,请稍后再试'),
+  })
+
+  const save = () => {
+    setEditing(false)
+    const title = draft.trim()
+    if (title && title !== value) rename.mutate(title)
+    else setDraft(value)
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setDraft(value)
+          setEditing(true)
+        }}
+        aria-label="编辑行程标题"
+        className="group flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 transition-colors hover:bg-zinc-100"
+      >
+        <span className="max-w-64 truncate text-base font-semibold tracking-tight">{value}</span>
+        <Pencil className="size-3.5 shrink-0 text-zinc-400 opacity-0 transition-opacity group-hover:opacity-100" />
+      </button>
+    )
+  }
+
+  return (
+    <input
+      aria-label="行程标题"
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={save}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') save()
+        if (e.key === 'Escape') {
+          setDraft(value)
+          setEditing(false)
+        }
+      }}
+      className="h-8 max-w-64 rounded-lg border border-accent-600 bg-white px-2 text-base font-semibold tracking-tight outline-none"
+    />
+  )
+}
+
+export default function TripEditorPage() {
+  const { id = '' } = useParams()
+  const [activeDayIndex, setActiveDayIndex] = useState(0)
+  const [hoveredItemId, setHoveredItemId] = useState<string | null>(null)
+  const [aiOpen, setAiOpen] = useState(false)
+
+  const tripQuery = useQuery({
+    queryKey: ['trip', id],
+    queryFn: () => api<TripDetail>(`/trips/${id}`),
+    enabled: Boolean(id),
+  })
+
+  const trip = tripQuery.data
+  const days = trip ? [...trip.days].sort((a, b) => a.dayIndex - b.dayIndex) : []
+  const activeDay = days[Math.min(activeDayIndex, Math.max(days.length - 1, 0))]
+
+  if (tripQuery.isPending) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-zinc-50">
+        <Spinner className="size-6 text-accent-600" />
+        <p className="text-sm text-zinc-500">行程加载中…</p>
+      </div>
+    )
+  }
+
+  if (tripQuery.isError || !trip) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 px-4">
+        <EmptyState
+          icon={CircleAlert}
+          title="行程打开失败"
+          description="行程可能不存在或已删除,回列表看看吧"
+          action={
+            <Link to="/trips">
+              <Button variant="secondary">返回我的行程</Button>
+            </Link>
+          }
+          className="w-full max-w-md"
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-screen flex-col bg-zinc-50">
+      {/* 顶栏 */}
+      <header className="material-chrome z-30 flex h-14 shrink-0 items-center gap-2 border-b border-zinc-200/60 px-4">
+        <Link
+          to="/trips"
+          aria-label="返回行程列表"
+          className="flex size-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
+        >
+          <ArrowLeft className="size-4" />
+        </Link>
+        <InlineTitle tripId={trip.id} value={trip.title} />
+        <span className="tnum hidden shrink-0 text-sm text-zinc-500 md:block">
+          {formatDateRange(trip.startDate, trip.endDate)}
+        </span>
+        <div className="ml-auto">
+          <Button size="sm" onClick={() => setAiOpen(true)}>
+            <Sparkles />
+            AI 规划
+          </Button>
+        </div>
+      </header>
+
+      {/* 主体:左栏时间轴 + 右栏地图 */}
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-[440px] shrink-0 flex-col border-r border-zinc-200/70 bg-white">
+          <DayTabs days={days} activeIndex={activeDay?.dayIndex ?? 0} onSelect={setActiveDayIndex} />
+          <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50/60">
+            {activeDay && (
+              <Timeline trip={trip} day={activeDay} onHoverItem={setHoveredItemId} />
+            )}
+          </div>
+        </aside>
+        <section className="min-w-0 flex-1">
+          <MapView day={activeDay} destination={trip.destination} hoveredItemId={hoveredItemId} />
+        </section>
+      </div>
+
+      <AiPanel open={aiOpen} onClose={() => setAiOpen(false)} trip={trip} />
+    </div>
+  )
+}
