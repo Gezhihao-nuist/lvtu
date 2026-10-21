@@ -79,6 +79,65 @@ describe('GeoService', () => {
     });
   });
 
+  describe('getWeather 天气预报', () => {
+    const amapWeatherResponse = {
+      status: '1',
+      count: '1',
+      forecasts: [
+        {
+          city: '安庆市',
+          adcode: '340800',
+          casts: [
+            {
+              date: '2026-10-21',
+              dayweather: '多云',
+              nightweather: '阴',
+              daytemp: '21',
+              nighttemp: '12',
+            },
+            {
+              date: '2026-10-22',
+              dayweather: '阴',
+              nightweather: '多云',
+              daytemp: '19',
+              nighttemp: '13',
+            },
+          ],
+        },
+      ],
+    };
+
+    it('成功解析 casts:字段完整且温度为数字;同城市调两次 fetch 只调 1 次', async () => {
+      fetchMock.mockResolvedValue(okFetch(amapWeatherResponse));
+      const first = await service.getWeather('安庆');
+      const second = await service.getWeather('安庆');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(first).toHaveLength(2);
+      expect(first[0]).toEqual({
+        date: '2026-10-21',
+        dayWeather: '多云',
+        nightWeather: '阴',
+        dayTemp: 21,
+        nightTemp: 12,
+      });
+      expect(second).toEqual(first);
+    });
+
+    it('该城市无预报覆盖:返回空数组', async () => {
+      fetchMock.mockResolvedValue(
+        okFetch({ status: '1', count: '0', forecasts: [] }),
+      );
+      await expect(service.getWeather('火星')).resolves.toEqual([]);
+    });
+
+    it('未配置 AMAP_KEY:reject ServiceUnavailableException', async () => {
+      configMock.get.mockReturnValue('');
+      const err = await service.getWeather('安庆').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('routes 批量', () => {
     const near = { lng: 120.0, lat: 30.0 };
     const mid = { lng: 120.01, lat: 30.0 }; // 距 near 约 1km

@@ -32,7 +32,10 @@ describe('AiService', () => {
     tripDay: { findMany: ReturnType<typeof vi.fn> };
     $transaction: ReturnType<typeof vi.fn>;
   };
-  let geoMock: { searchPoi: ReturnType<typeof vi.fn> };
+  let geoMock: {
+    searchPoi: ReturnType<typeof vi.fn>;
+    getWeather: ReturnType<typeof vi.fn>;
+  };
   let configMock: { get: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
@@ -42,7 +45,10 @@ describe('AiService', () => {
       tripDay: { findMany: vi.fn() },
       $transaction: vi.fn(),
     };
-    geoMock = { searchPoi: vi.fn() };
+    geoMock = {
+      searchPoi: vi.fn(),
+      getWeather: vi.fn().mockResolvedValue([]),
+    };
     configMock = { get: vi.fn().mockReturnValue('') };
     service = new AiService(
       prismaMock as unknown as PrismaService,
@@ -410,6 +416,61 @@ describe('AiService', () => {
       const food = plan.days[0]!.items[1]!;
       expect(food.lng).toBeUndefined();
       expect(food.lat).toBeUndefined();
+    });
+  });
+
+  describe('buildWeatherHint(逐日天气提示词)', () => {
+    const casts = [
+      {
+        date: '2026-10-22',
+        dayWeather: '小雨',
+        nightWeather: '阴',
+        dayTemp: 19,
+        nightTemp: 13,
+      },
+      {
+        date: '2026-10-23',
+        dayWeather: '晴',
+        nightWeather: '晴',
+        dayTemp: 24,
+        nightTemp: 15,
+      },
+    ];
+    const start = new Date('2026-10-22T00:00:00.000Z');
+
+    it('重叠窗口内的天输出天气行;早晚同天不写「转」', async () => {
+      configMock.get.mockReturnValue('amap-key');
+      geoMock.getWeather.mockResolvedValue(casts);
+      const hint = await service['buildWeatherHint']('安庆', start, 4);
+      expect(hint).toContain('天气预报:');
+      expect(hint).toContain('第1天 10-22:小雨转阴 13~19°C');
+      expect(hint).toContain('第2天 10-23:晴 15~24°C');
+      expect(hint).not.toContain('第3天'); // 超出预报窗口
+    });
+
+    it('行程与预报窗口完全不重叠:返回空串', async () => {
+      configMock.get.mockReturnValue('amap-key');
+      geoMock.getWeather.mockResolvedValue(casts);
+      const hint = await service['buildWeatherHint'](
+        '安庆',
+        new Date('2027-01-01T00:00:00.000Z'),
+        3,
+      );
+      expect(hint).toBe('');
+    });
+
+    it('天气接口失败:静默降级为空串,不影响生成', async () => {
+      configMock.get.mockReturnValue('amap-key');
+      geoMock.getWeather.mockRejectedValue(new Error('高德挂了'));
+      const hint = await service['buildWeatherHint']('安庆', start, 3);
+      expect(hint).toBe('');
+    });
+
+    it('未配置 AMAP_KEY:返回空串且不调天气接口', async () => {
+      configMock.get.mockReturnValue('');
+      const hint = await service['buildWeatherHint']('安庆', start, 3);
+      expect(hint).toBe('');
+      expect(geoMock.getWeather).not.toHaveBeenCalled();
     });
   });
 });

@@ -24,7 +24,7 @@ export type SseEmit = (data: Record<string, unknown>) => void;
 
 const SYSTEM_PROMPT = `你是专业旅行规划师。根据用户给出的目的地、天数、日期与偏好,输出 JSON 格式行程。
 输出 schema:{"days":[{"dayIndex":0,"items":[{"type":"SPOT"|"FOOD"|"HOTEL"|"TRANSPORT","title":string,"poiName":string|null,"startTime":"HH:mm"|null,"endTime":"HH:mm"|null,"cost":number|null,"note":string|null}]}]}
-要求:每天 3-6 项;节奏合理(景点→午餐→景点→晚餐);**地理位置就近原则:同一天的景点必须集中在同一区域(同一城区/县城/景区),按游览顺序就近排列,不走回头路;相隔较远的区域分到不同天;餐厅要选在当天游览区域的附近**;poiName 尽量使用高德地图能搜到的正式地名;绝不输出经纬度;note 用一两句口语化中文说清看点或贴士,避免 AI 腔,不要出现「赋能」「沉浸式」这类词;dayIndex 从 0 开始;只输出 JSON,不要输出任何解释。`;
+要求:每天 3-6 项;节奏合理(景点→午餐→景点→晚餐);**地理位置就近原则:同一天的景点必须集中在同一区域(同一城区/县城/景区),按游览顺序就近排列,不走回头路;相隔较远的区域分到不同天;餐厅要选在当天游览区域的附近**;**若提供了天气预报:降雨/降雪天优先安排室内景点(博物馆/美术馆/商场/茶馆等),晴天优先安排户外景点,并在对应条目的 note 里自然地提一句天气贴士(如带伞、防晒),不要生硬罗列**;poiName 尽量使用高德地图能搜到的正式地名;绝不输出经纬度;note 用一两句口语化中文说清看点或贴士,避免 AI 腔,不要出现「赋能」「沉浸式」这类词;dayIndex 从 0 开始;只输出 JSON,不要输出任何解释。`;
 
 const itemSchema = z.object({
   type: z.enum(['SPOT', 'FOOD', 'HOTEL', 'TRANSPORT']),
@@ -99,9 +99,15 @@ export class AiService {
     emit({ type: 'progress', text: '正在规划行程…' });
     const start = trip.startDate.toISOString().slice(0, 10);
     const end = trip.endDate.toISOString().slice(0, 10);
+    const weatherHint = await this.buildWeatherHint(
+      trip.destination,
+      trip.startDate,
+      trip.days.length,
+    );
     const userPrompt =
       `目的地:${trip.destination}\n` +
       `日期:${start} 至 ${end},共 ${trip.days.length} 天\n` +
+      weatherHint +
       `偏好:${preferences?.trim() || '无特别偏好'}\n` +
       `请输出完整行程 JSON。`;
     emit({ type: 'progress', text: 'AI 正在生成行程方案…' });
@@ -165,8 +171,14 @@ export class AiService {
         })),
       })),
     };
+    const weatherHint = await this.buildWeatherHint(
+      trip.destination,
+      trip.startDate,
+      trip.days.length,
+    );
     const userPrompt =
       `当前行程:${JSON.stringify(current)}\n` +
+      weatherHint +
       `用户指令:${message}\n` +
       `请输出调整后的完整行程 JSON,schema 不变。`;
     emit({ type: 'progress', text: 'AI 正在调整行程…' });
@@ -215,6 +227,44 @@ export class AiService {
       userText,
     );
     emit({ type: 'done', dayCount, itemCount });
+  }
+
+  /**
+   * 逐日天气预报提示(高德预报仅覆盖当天 + 未来 3 天,
+   * 行程与预报窗口重叠的天数才输出;未配置 Key / 接口失败 / 无重叠
+   * 时静默降级为空串,不影响生成主流程)。
+   */
+  private async buildWeatherHint(
+    destination: string,
+    startDate: Date,
+    dayCount: number,
+  ): Promise<string> {
+    if (!this.amapKey) return '';
+    try {
+      const casts = await this.geo.getWeather(destination);
+      if (!casts.length) return '';
+      const byDate = new Map(casts.map((c) => [c.date, c]));
+      const lines: string[] = [];
+      for (let i = 0; i < dayCount; i++) {
+        const d = new Date(startDate.getTime() + i * 86_400_000);
+        const key = d.toISOString().slice(0, 10);
+        const c = byDate.get(key);
+        if (!c) continue;
+        const weather =
+          c.dayWeather === c.nightWeather
+            ? c.dayWeather
+            : `${c.dayWeather}转${c.nightWeather}`;
+        lines.push(
+          `第${i + 1}天 ${key.slice(5)}:${weather} ${c.nightTemp}~${c.dayTemp}°C`,
+        );
+      }
+      return lines.length ? `天气预报:\n${lines.join('\n')}\n` : '';
+    } catch (e) {
+      this.logger.warn(
+        `天气预报获取失败,按无天气信息继续: ${e instanceof Error ? e.message : e}`,
+      );
+      return '';
+    }
   }
 
   /** 调用大模型产出经容错链校验的行程;Mock 模式直接返回模拟行程 */

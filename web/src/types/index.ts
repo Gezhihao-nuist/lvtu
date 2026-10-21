@@ -65,6 +65,15 @@ export interface Poi {
   lat: number
 }
 
+/** 高德单日天气预报(仅覆盖当天 + 未来 3 天) */
+export interface WeatherCast {
+  date: string
+  dayWeather: string
+  nightWeather: string
+  dayTemp: number
+  nightTemp: number
+}
+
 export type SseEvent =
   | { type: 'progress'; text: string }
   | { type: 'done'; dayCount: number; itemCount: number }

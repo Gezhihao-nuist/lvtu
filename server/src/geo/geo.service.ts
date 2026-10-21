@@ -35,6 +35,16 @@ export interface RoutesResult {
   totalDuration: number;
 }
 
+/** 高德天气预报(当天 + 未来 3 天) */
+export interface WeatherCast {
+  /** '2026-10-21' */
+  date: string;
+  dayWeather: string;
+  nightWeather: string;
+  dayTemp: number;
+  nightTemp: number;
+}
+
 interface CacheEntry {
   data: unknown;
   expireAt: number;
@@ -109,6 +119,31 @@ export class GeoService {
       .filter((p) => Number.isFinite(p.lng) && Number.isFinite(p.lat));
     this.setCached(cacheKey, pois);
     return pois;
+  }
+
+  /** 高德天气预报:城市名或 adcode 均可;无预报覆盖的城市返回空数组 */
+  async getWeather(city: string): Promise<WeatherCast[]> {
+    const key = this.amapKey();
+    const cacheKey = `weather:${city}`;
+    const cached = this.getCached<WeatherCast[]>(cacheKey);
+    if (cached) return cached;
+    const url =
+      `https://restapi.amap.com/v3/weather/weatherInfo?key=${key}` +
+      `&city=${encodeURIComponent(city)}&extensions=all`;
+    const data = await this.fetchJson(url);
+    const casts: WeatherCast[] = (
+      (data.forecasts?.[0]?.casts ?? []) as Record<string, unknown>[]
+    )
+      .map((c) => ({
+        date: String(c.date ?? ''),
+        dayWeather: String(c.dayweather ?? ''),
+        nightWeather: String(c.nightweather ?? ''),
+        dayTemp: Number(c.daytemp),
+        nightTemp: Number(c.nighttemp),
+      }))
+      .filter((c) => c.date);
+    this.setCached(cacheKey, casts);
+    return casts;
   }
 
   /** 高德路径规划,返回首条方案的距离/时长/ polyline */

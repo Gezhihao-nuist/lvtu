@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, CircleAlert, Pencil, Sparkles } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange } from '../../lib/format'
-import type { TripDetail } from '../../types'
+import type { TripDetail, WeatherCast } from '../../types'
 import { Button } from '../../components/ui/button'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Spinner } from '../../components/ui/spinner'
@@ -82,6 +82,22 @@ export default function TripEditorPage() {
   })
 
   const trip = tripQuery.data
+
+  // 天气预报(仅当天 + 未来 3 天有数据;失败静默降级,不显示徽标)
+  const weatherQuery = useQuery({
+    queryKey: ['weather', trip?.destination],
+    queryFn: () =>
+      api<{ casts: WeatherCast[] }>(
+        `/geo/weather?city=${encodeURIComponent(trip!.destination)}`,
+      ),
+    enabled: Boolean(trip?.destination),
+    staleTime: 30 * 60 * 1000,
+    retry: false,
+  })
+  const weatherByDate = new Map(
+    (weatherQuery.data?.casts ?? []).map((c) => [c.date, c]),
+  )
+
   const days = trip ? [...trip.days].sort((a, b) => a.dayIndex - b.dayIndex) : []
   const activeDay = days[Math.min(activeDayIndex, Math.max(days.length - 1, 0))]
 
@@ -138,7 +154,7 @@ export default function TripEditorPage() {
       {/* 主体:左栏时间轴 + 右栏地图 */}
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[440px] shrink-0 flex-col border-r border-zinc-200/70 bg-white">
-          <DayTabs days={days} activeIndex={activeDay?.dayIndex ?? 0} onSelect={setActiveDayIndex} />
+          <DayTabs days={days} activeIndex={activeDay?.dayIndex ?? 0} onSelect={setActiveDayIndex} weatherByDate={weatherByDate} />
           <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50/60">
             {activeDay && (
               <Timeline trip={trip} day={activeDay} onHoverItem={setHoveredItemId} />

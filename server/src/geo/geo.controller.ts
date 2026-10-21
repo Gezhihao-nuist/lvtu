@@ -4,6 +4,7 @@ import {
   PoiQueryDto,
   RouteQueryDto,
   RoutesBodyDto,
+  WeatherQueryDto,
 } from './dto/geo-query.dto.js';
 import { GeoService } from './geo.service.js';
 
@@ -16,6 +17,12 @@ export class GeoController {
   async poi(@Query() query: PoiQueryDto) {
     const pois = await this.geo.searchPoi(query.keyword, query.city);
     return { pois };
+  }
+
+  @Get('weather')
+  async weather(@Query() query: WeatherQueryDto) {
+    const casts = await this.geo.getWeather(query.city);
+    return { casts };
   }
 
   @Get('route')
