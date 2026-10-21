@@ -146,6 +146,17 @@ export class GeoService {
             ? 'walking'
             : 'driving'
           : mode;
+      // 起终点相同(同地往返/重复点):不浪费高德调用,直接给零距离段
+      if (a.lng === b.lng && a.lat === b.lat) {
+        segments[idx] = {
+          distance: 0,
+          duration: 0,
+          polyline: `${from};${to}`,
+          mode: resolvedMode,
+          fallback: false,
+        };
+        return;
+      }
       try {
         const r = await this.route(from, to, resolvedMode);
         segments[idx] = { ...r, mode: resolvedMode, fallback: false };
@@ -212,7 +223,13 @@ export class GeoService {
   }
 
   private async fetchJson(url: string): Promise<any> {
-    const res = await fetch(url);
+    let res: Response;
+    try {
+      // 10 秒超时兜底:高德挂起时快速失败,不拖垮调用方
+      res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    } catch {
+      throw new BadGatewayException('高德接口超时或网络异常,请稍后重试');
+    }
     if (!res.ok) throw new BadGatewayException('高德接口调用失败');
     const data = await res.json();
     if (data.status !== undefined && data.status !== '1') {

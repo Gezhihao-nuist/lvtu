@@ -45,7 +45,7 @@ export class AiController {
     await this.runSse(res, (emit) => this.ai.chat(tripId, dto.message, emit));
   }
 
-  /** 初始化 SSE 响应并执行任务,保证结束时 res.end() */
+  /** 初始化 SSE 响应并执行任务,保证结束时 res.end();客户端断连后 emit 变为空操作,避免向已关闭连接写入 */
   private async runSse(res: Response, task: (emit: SseEmit) => Promise<void>) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -54,14 +54,21 @@ export class AiController {
       'X-Accel-Buffering': 'no',
     });
     res.flushHeaders();
-    const emit: SseEmit = (data) =>
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    let closed = false;
+    res.on('close', () => {
+      closed = true;
+      this.logger.log('SSE 客户端提前断开连接');
+    });
+    const emit: SseEmit = (data) => {
+      if (closed) return true;
+      return res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
     try {
       await task(emit);
     } catch (e) {
       this.logger.error(`AI 任务异常: ${e instanceof Error ? e.message : e}`);
       emit({ type: 'error', message: '生成失败,请重试' });
     }
-    res.end();
+    if (!closed) res.end();
   }
 }

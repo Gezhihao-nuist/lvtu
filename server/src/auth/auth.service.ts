@@ -21,13 +21,14 @@ export class AuthService {
 
   /** 注册新用户并签发令牌对 */
   async register(dto: RegisterDto) {
+    const email = dto.email.trim().toLowerCase();
     const exists = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email },
     });
     if (exists) throw new ConflictException('该邮箱已被注册');
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const user = await this.prisma.user.create({
-      data: { email: dto.email, passwordHash, nickname: dto.nickname },
+      data: { email, passwordHash, nickname: dto.nickname.trim() },
     });
     return this.buildAuthPayload(user);
   }
@@ -35,7 +36,7 @@ export class AuthService {
   /** 校验邮箱密码并签发令牌对 */
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email: dto.email.trim().toLowerCase() },
     });
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('邮箱或密码错误');

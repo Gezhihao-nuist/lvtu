@@ -249,6 +249,11 @@ export class AiService {
 
   /** 把模型 API 异常翻译成用户可操作的提示 */
   private friendlyApiError(e: unknown): string {
+    const name = (e as { name?: string } | null)?.name ?? '';
+    const msg = e instanceof Error ? e.message : '';
+    if (name.includes('Timeout') || /timed?\s*out/i.test(msg)) {
+      return 'AI 响应超时,请重试';
+    }
     const status = (e as { status?: number } | null)?.status;
     switch (status) {
       case 401:
@@ -291,15 +296,18 @@ export class AiService {
     return { plan: result.data as Plan, error: null };
   }
 
-  /** 调用 DeepSeek(非流式,等待完整 JSON 返回) */
+  /** 调用 DeepSeek(非流式,等待完整 JSON 返回;90 秒超时兜底,防止 API 挂起导致 SSE 永不结束) */
   private async callModel(
     messages: OpenAI.ChatCompletionMessageParam[],
   ): Promise<string> {
-    const completion = await this.getClient().chat.completions.create({
-      model: this.cfg.get('DEEPSEEK_MODEL') ?? 'deepseek-chat',
-      messages,
-      response_format: { type: 'json_object' },
-    });
+    const completion = await this.getClient().chat.completions.create(
+      {
+        model: this.cfg.get('DEEPSEEK_MODEL') ?? 'deepseek-chat',
+        messages,
+        response_format: { type: 'json_object' },
+      },
+      { signal: AbortSignal.timeout(90_000) },
+    );
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('模型返回为空');
     return content;
