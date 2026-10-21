@@ -13,6 +13,12 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 import { GeoService } from '../geo/geo.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import {
+  haversineKm,
+  optimizeDayOrder,
+  rebalanceDays,
+  reflowDayTimes,
+} from './optimizer.js';
 
 export type SseEmit = (data: Record<string, unknown>) => void;
 
@@ -325,18 +331,12 @@ export class AiService {
     return this.client;
   }
 
-  /** 两点球面直线距离(km) */
+  /** 两点球面直线距离(km),委托给 optimizer 模块(保留方法以便复用与测试) */
   private haversineKm(
     a: { lng: number; lat: number },
     b: { lng: number; lat: number },
   ): number {
-    const rad = Math.PI / 180;
-    const dLat = (b.lat - a.lat) * rad;
-    const dLng = (b.lng - a.lng) * rad;
-    const s =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
-    return 2 * 6371 * Math.asin(Math.sqrt(s));
+    return haversineKm(a, b);
   }
 
   /**
@@ -401,96 +401,17 @@ export class AiService {
   }
 
   /**
-   * 每日顺序地理优化:消除 zigzag 折返。
-   * FOOD/HOTEL/无坐标项钉在原位置(饭点与住宿不动),
-   * 其余有坐标项用最近邻 + 2-opt 重排,最后按类型时长重排时间轴。
+   * 行程地理优化(TTDP 三段式,见 optimizer.ts):
+   * 1. Cluster-first:跨天离群景点重分配,避免跨城折返;
+   * 2. Route-second:每天内部穷举精确排序(餐饮/住宿钉位),
+   *    代价 = 道路里程 + U 型折返转向惩罚;
+   * 3. Schedule-third:按点间距离估算交通耗时,重排时间轴。
    */
   private optimizePlan(plan: Plan) {
+    rebalanceDays(plan.days, (msg) => this.logger.warn(msg));
     for (const day of plan.days) {
-      const pinned = (it: PlanItem) =>
-        it.type === 'FOOD' ||
-        it.type === 'HOTEL' ||
-        it.lng == null ||
-        it.lat == null;
-      const movableIdx = day.items
-        .map((it, i) => ({ it, i }))
-        .filter(({ it }) => !pinned(it));
-      if (movableIdx.length < 3) continue; // 少于 3 个可动项没有优化空间
-
-      const movable = movableIdx.map(({ it }) => it);
-      // 最近邻构造初始解(从原第一个可动项出发)
-      const remaining = movable.slice(1);
-      let route = [movable[0]!];
-      while (remaining.length) {
-        const last = route[route.length - 1]!;
-        let bi = 0;
-        let bd = Infinity;
-        for (let i = 0; i < remaining.length; i++) {
-          const d = this.haversineKm(
-            { lng: last.lng!, lat: last.lat! },
-            { lng: remaining[i]!.lng!, lat: remaining[i]!.lat! },
-          );
-          if (d < bd) {
-            bd = d;
-            bi = i;
-          }
-        }
-        route.push(remaining.splice(bi, 1)[0]!);
-      }
-      // 2-opt 改进
-      const leg = (a: PlanItem, b: PlanItem) =>
-        this.haversineKm(
-          { lng: a.lng!, lat: a.lat! },
-          { lng: b.lng!, lat: b.lat! },
-        );
-      const total = (r: PlanItem[]) =>
-        r.slice(0, -1).reduce((s, it, i) => s + leg(it, r[i + 1]!), 0);
-      let improved = true;
-      let guard = 0;
-      while (improved && guard++ < 50) {
-        improved = false;
-        for (let i = 1; i < route.length - 1; i++) {
-          for (let j = i + 1; j < route.length; j++) {
-            const candidate = [
-              ...route.slice(0, i),
-              ...route.slice(i, j + 1).reverse(),
-              ...route.slice(j + 1),
-            ];
-            if (total(candidate) + 0.01 < total(route)) {
-              route = candidate;
-              improved = true;
-            }
-          }
-        }
-      }
-      // 重组:钉住的保持原位,可动位按优化后顺序填回
-      let k = 0;
-      day.items = day.items.map((it) => (pinned(it) ? it : route[k++]!));
-      this.reflowTimes(day.items);
-    }
-  }
-
-  /** 按顺序重排一天的时间轴:08:30 开始,项间留 30 分钟交通缓冲 */
-  private reflowTimes(items: PlanItem[]) {
-    const defaultDur: Record<PlanItem['type'], number> = {
-      SPOT: 120,
-      FOOD: 60,
-      TRANSPORT: 45,
-      HOTEL: 0,
-    };
-    const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
-    const toHHmm = (m: number) =>
-      `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-    let cursor = items[0]?.startTime ? toMin(items[0].startTime) : 8 * 60 + 30;
-    for (const it of items) {
-      let dur = defaultDur[it.type];
-      if (it.startTime && it.endTime) {
-        const d = toMin(it.endTime) - toMin(it.startTime);
-        if (d >= 15 && d <= 360) dur = d;
-      }
-      it.startTime = toHHmm(cursor);
-      it.endTime = it.type === 'HOTEL' ? null : toHHmm(cursor + dur);
-      cursor += dur + 30;
+      optimizeDayOrder(day.items);
+      reflowDayTimes(day.items);
     }
   }
 

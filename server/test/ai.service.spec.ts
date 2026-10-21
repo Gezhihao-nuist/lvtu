@@ -223,17 +223,19 @@ describe('AiService', () => {
       return sum;
     };
 
-    it('zigzag 折返被重排:A→100km 外 B→A 附近 C,优化后 C 紧跟 A', () => {
+    it('zigzag 折返被精确重排:1→2 跑 100km、3 又回到 1 附近的 badcase 被消除', () => {
+      // 用户实测反馈的 badcase 复刻:B 远在 ~96km 外,却被排在 A 与 C/D 之间
       const plan: OptPlan = {
         days: [
           {
             dayIndex: 0,
             items: [
               mkItem('SPOT', 'A景点', 116.0, 30.0),
-              mkItem('SPOT', 'B远山', 117.0, 30.0), // ~97km
+              mkItem('SPOT', 'B远山', 117.0, 30.0), // ~96km 外
               mkItem('FOOD', '午餐', 116.01, 30.0), // 钉在 idx2
-              mkItem('SPOT', 'C景点', 116.02, 30.0), // 离 A ~2km
-              mkItem('HOTEL', '住宿', 116.0, 30.01), // 钉在 idx4
+              mkItem('SPOT', 'C景点', 116.03, 30.0),
+              mkItem('SPOT', 'D景点', 116.05, 30.02),
+              mkItem('HOTEL', '住宿', 116.02, 30.0), // 钉在 idx5
             ],
           },
         ],
@@ -242,30 +244,33 @@ describe('AiService', () => {
       service['optimizePlan'](plan);
       const items = plan.days[0]!.items;
       expect(items[2]!.title).toBe('午餐'); // FOOD 位置不动
-      expect(items[4]!.title).toBe('住宿'); // HOTEL 位置不动
-      expect(items[1]!.title).toBe('C景点'); // 近的点排到 A 后面
-      expect(totalKm(items)).toBeLessThan(before);
+      expect(items[5]!.title).toBe('住宿'); // HOTEL 位置不动
+      // 穷举取到全局最优:远端 B 被移到链端,总里程不到原来六成
+      expect(totalKm(items)).toBeLessThan(before * 0.6);
     });
 
-    it('可动项少于 3 个时不改变顺序', () => {
+    it('两个可动项:交换后总里程显著更短则交换(精确求解)', () => {
       const plan: OptPlan = {
         days: [
           {
             dayIndex: 0,
             items: [
               mkItem('SPOT', 'A', 116.0, 30.0),
-              mkItem('SPOT', 'B', 117.0, 30.0),
-              mkItem('HOTEL', '住宿', 116.0, 30.0),
+              mkItem('SPOT', 'B', 117.0, 30.0), // ~96km
+              mkItem('HOTEL', '住宿', 116.0, 30.0), // 钉在末尾
             ],
           },
         ],
       };
+      const before = totalKm(plan.days[0]!.items);
       service['optimizePlan'](plan);
+      // B→A→住宿 ≈ 96km,远优于 A→B→住宿 ≈ 193km
       expect(plan.days[0]!.items.map((i) => i.title)).toEqual([
-        'A',
         'B',
+        'A',
         '住宿',
       ]);
+      expect(totalKm(plan.days[0]!.items)).toBeLessThan(before);
     });
 
     it('重排后时间轴严格递增且不重叠', () => {
