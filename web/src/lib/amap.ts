@@ -24,6 +24,13 @@ export interface AMapPolyline {
   setMap(map: AMapMapInstance | null): void
 }
 
+/** 切片图层(实时路况等) */
+export interface AMapTileLayer {
+  setMap(map: AMapMapInstance | null): void
+  show?(): void
+  hide?(): void
+}
+
 export interface GeocoderResult {
   info?: string
   geocodes?: Array<{ location?: { lng: number; lat: number } | string }>
@@ -37,6 +44,10 @@ export interface AMapNamespace {
   Map: new (el: HTMLElement, opts: Record<string, unknown>) => AMapMapInstance
   Marker: new (opts: Record<string, unknown>) => AMapMarker
   Polyline: new (opts: Record<string, unknown>) => AMapPolyline
+  TileLayer?: {
+    /** 官方实时路况图层(核心类,无需插件) */
+    Traffic: new (opts?: Record<string, unknown>) => AMapTileLayer
+  }
   Geocoder?: new (opts?: Record<string, unknown>) => AMapGeocoder
   plugin(name: string | string[], cb: () => void): void
 }

@@ -162,7 +162,7 @@ export default function TripEditorPage() {
           </div>
         </aside>
         <section className="min-w-0 flex-1">
-          <MapView day={activeDay} destination={trip.destination} hoveredItemId={hoveredItemId} />
+          <MapView day={activeDay} destination={trip.destination} hoveredItemId={hoveredItemId} weatherCasts={weatherQuery.data?.casts} />
         </section>
       </div>
 

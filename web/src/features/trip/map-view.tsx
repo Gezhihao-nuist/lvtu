@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Compass } from 'lucide-react'
+import { CarFront, CloudSun, Compass } from 'lucide-react'
 import {
   BEIJING,
   geocodeCity,
@@ -10,15 +10,20 @@ import {
   type AMapMarker,
   type AMapNamespace,
   type AMapPolyline,
+  type AMapTileLayer,
 } from '../../lib/amap'
 import { api } from '../../lib/api'
-import type { ItineraryItem, TripDay } from '../../types'
+import { cn } from '../../lib/utils'
+import type { ItineraryItem, TripDay, WeatherCast } from '../../types'
 import { ITEM_TYPE_META } from './item-meta'
+import { weatherIcon } from './weather-icon'
 
 interface MapViewProps {
   day: TripDay | undefined
   destination: string
   hoveredItemId: string | null
+  /** 行程目的地天气预报(当天 + 未来 3 天);不传则天气浮层不显示数据 */
+  weatherCasts?: WeatherCast[]
 }
 
 type CoordItem = ItineraryItem & { lng: number; lat: number }
@@ -38,8 +43,8 @@ interface RouteSegmentDto {
   fallback: boolean
 }
 
-/** 'lng,lat;lng,lat' → [[lng,lat],…] */
-function parsePolyline(s: string): [number, number][] {
+/** 'lng,lat;lng,lat' → [[lng,lat],…](坏段跳过) */
+export function parsePolyline(s: string): [number, number][] {
   const out: [number, number][] = []
   for (const pair of s.split(';')) {
     const [lng, lat] = pair.split(',').map(Number)
@@ -131,17 +136,20 @@ function MapPlaceholder({ day }: { day: TripDay | undefined }) {
   )
 }
 
-export function MapView({ day, destination, hoveredItemId }: MapViewProps) {
+export function MapView({ day, destination, hoveredItemId, weatherCasts }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const amapRef = useRef<AMapNamespace | null>(null)
   const mapRef = useRef<AMapMapInstance | null>(null)
   const markersRef = useRef<Array<{ id: string; item: CoordItem; index: number; marker: AMapMarker }>>([])
   const polylinesRef = useRef<AMapPolyline[]>([])
+  const trafficLayerRef = useRef<AMapTileLayer | null>(null)
   const routeGenRef = useRef(0)
   const routeCacheRef = useRef(new Map<string, [number, number][][]>())
   const [mapReady, setMapReady] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [routing, setRouting] = useState(false)
+  const [showTraffic, setShowTraffic] = useState(false)
+  const [showWeather, setShowWeather] = useState(false)
 
   const coordItems = withCoords(day)
   const coordKey = coordItems.map((i) => `${i.id}:${i.lng},${i.lat}:${i.orderIndex}`).join('|')
@@ -285,6 +293,23 @@ export function MapView({ day, destination, hoveredItemId }: MapViewProps) {
     }
   }, [hoveredItemId])
 
+  // 实时路况图层开关(高德官方图层,与高德 App 同款;autoRefresh 自动刷新)
+  useEffect(() => {
+    const AMap = amapRef.current
+    const map = mapRef.current
+    if (!mapReady || !AMap || !map) return
+    if (showTraffic && !trafficLayerRef.current) {
+      try {
+        trafficLayerRef.current = AMap.TileLayer
+          ? new AMap.TileLayer.Traffic({ zIndex: 10, autoRefresh: true })
+          : null
+      } catch {
+        trafficLayerRef.current = null
+      }
+    }
+    trafficLayerRef.current?.setMap(showTraffic ? map : null)
+  }, [showTraffic, mapReady])
+
   if (!isAmapAvailable) return <MapPlaceholder day={day} />
 
   if (loadError) {
@@ -311,6 +336,68 @@ export function MapView({ day, destination, hoveredItemId }: MapViewProps) {
         <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-full bg-white/90 px-3 py-1.5 text-xs text-zinc-600 shadow-float backdrop-blur">
           <span className="size-3 animate-spin rounded-full border-2 border-zinc-200 border-t-accent-600" />
           路线规划中…
+        </div>
+      )}
+
+      {/* 图层开关:天气 / 路况(高德风格右侧竖排) */}
+      {mapReady && (
+        <div className="absolute right-3 top-3 flex flex-col gap-1.5">
+          <button
+            type="button"
+            aria-pressed={showWeather}
+            onClick={() => setShowWeather((v) => !v)}
+            className={cn(
+              'flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium shadow-float backdrop-blur transition-colors',
+              showWeather
+                ? 'bg-accent-600 text-white'
+                : 'bg-white/90 text-zinc-600 hover:text-zinc-900',
+            )}
+          >
+            <CloudSun className="size-3.5" />
+            天气
+          </button>
+          <button
+            type="button"
+            aria-pressed={showTraffic}
+            onClick={() => setShowTraffic((v) => !v)}
+            className={cn(
+              'flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium shadow-float backdrop-blur transition-colors',
+              showTraffic
+                ? 'bg-accent-600 text-white'
+                : 'bg-white/90 text-zinc-600 hover:text-zinc-900',
+            )}
+          >
+            <CarFront className="size-3.5" />
+            路况
+          </button>
+        </div>
+      )}
+
+      {/* 天气浮层:行程目的地逐日预报 */}
+      {mapReady && showWeather && (
+        <div className="absolute left-3 top-3 w-44 rounded-2xl bg-white/92 p-3 shadow-float backdrop-blur">
+          <p className="mb-2 text-xs font-semibold text-zinc-700">{destination}天气</p>
+          {weatherCasts?.length ? (
+            <ul className="space-y-1.5">
+              {weatherCasts.map((c) => {
+                const Icon = weatherIcon(c.dayWeather)
+                return (
+                  <li key={c.date} className="flex items-center gap-2 text-xs text-zinc-600">
+                    <Icon className="size-3.5 shrink-0 text-amber-500" />
+                    <span className="tnum shrink-0">{c.date.slice(5)}</span>
+                    <span className="truncate">{c.dayWeather}</span>
+                    <span className="tnum ml-auto shrink-0 text-zinc-400">
+                      {c.nightTemp}~{c.dayTemp}°
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : (
+            <p className="text-xs leading-relaxed text-zinc-400">
+              近期暂无预报数据,出发前 3 天内可查
+            </p>
+          )}
         </div>
       )}
     </div>

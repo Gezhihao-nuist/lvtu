@@ -22,6 +22,14 @@ interface AuthPayload {
   accessToken: string
 }
 
+/**
+ * 进行中的刷新请求(模块级单例)。
+ * refresh token 是轮换制的:并发 401 若各自发起刷新,
+ * 第二个请求会用已作废的旧 token 而被拒,导致误把用户踢下线。
+ * 所有并发调用共享同一个 promise,保证只有一次真实刷新。
+ */
+let refreshPromise: Promise<boolean> | null = null
+
 async function parseError(res: Response): Promise<string> {
   try {
     const data: unknown = await res.json()
@@ -96,18 +104,25 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   async refresh() {
-    try {
-      const res = await fetch('/api/v1/auth/refresh', {
-        method: 'POST',
-        credentials: 'include',
+    if (!refreshPromise) {
+      refreshPromise = (async () => {
+        try {
+          const res = await fetch('/api/v1/auth/refresh', {
+            method: 'POST',
+            credentials: 'include',
+          })
+          if (!res.ok) return false
+          const data = (await res.json()) as { accessToken: string }
+          set({ accessToken: data.accessToken })
+          return true
+        } catch {
+          return false
+        }
+      })().finally(() => {
+        refreshPromise = null
       })
-      if (!res.ok) return false
-      const data = (await res.json()) as { accessToken: string }
-      set({ accessToken: data.accessToken })
-      return true
-    } catch {
-      return false
     }
+    return refreshPromise
   },
 
   clearSession() {

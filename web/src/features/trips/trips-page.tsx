@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import { CalendarDays, Copy, MapPin, MoreVertical, Plus, Route, Trash2, Wallet } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange, formatMoney } from '../../lib/format'
-import { cityCover } from './city-covers'
+import { cityCover, FALLBACK_COVER } from './city-covers'
 import type { TripSummary } from '../../types'
 import { AppHeader } from '../../components/layout/app-header'
 import { Button } from '../../components/ui/button'
@@ -55,6 +55,13 @@ function TripCard({
           width={800}
           height={450}
           loading="lazy"
+          onError={(e) => {
+            // 生成图/自定义图失败时回退通用风景,避免破图(防循环:兜底图再失败则放弃)
+            const el = e.currentTarget
+            if (!el.src.startsWith(FALLBACK_COVER.slice(0, 60))) {
+              el.src = FALLBACK_COVER
+            }
+          }}
           className="size-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.03]"
         />
         <div onClick={(e) => e.stopPropagation()} className="absolute right-2.5 top-2.5">

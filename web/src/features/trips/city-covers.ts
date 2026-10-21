@@ -159,6 +159,9 @@ const DEFAULT_COVER = img(
   'Photorealistic travel landscape, a winding road toward snow-capped mountains and a turquoise lake at golden hour, professional landscape photography, ultra detailed',
 )
 
+/** 封面图加载失败时的最终兜底(通用风景,几乎不会失败) */
+export const FALLBACK_COVER = DEFAULT_COVER
+
 /** 去掉「北京市」「大理白族自治州」这类后缀,让动态提示词更干净 */
 function normalizePlaceName(raw: string): string {
   return raw
