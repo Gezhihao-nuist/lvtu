@@ -16,7 +16,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { motion } from 'framer-motion'
-import { GripVertical, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
+import { GripVertical, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/utils'
 import { formatMoney } from '../../lib/format'
@@ -117,6 +117,15 @@ function SortableItemCard({
         </div>
 
         <div className="flex shrink-0 flex-col items-end gap-1">
+          {item.rating != null && (
+            <span
+              title="高德评分"
+              className="tnum flex items-center gap-0.5 text-xs font-semibold text-amber-600"
+            >
+              <Star className="size-3 fill-amber-400 text-amber-400" />
+              {item.rating.toFixed(1)}
+            </span>
+          )}
           {item.cost != null && (
             <span className="tnum text-sm font-medium text-zinc-700">{formatMoney(item.cost)}</span>
           )}

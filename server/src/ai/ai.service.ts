@@ -11,13 +11,14 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import OpenAI from 'openai';
 import { z } from 'zod';
-import { GeoService } from '../geo/geo.service.js';
+import { GeoService, type WeatherCast } from '../geo/geo.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import {
   haversineKm,
   optimizeDayOrder,
   rebalanceDays,
   reflowDayTimes,
+  weatherAwareSwap,
 } from './optimizer.js';
 
 export type SseEmit = (data: Record<string, unknown>) => void;
@@ -47,6 +48,8 @@ const planSchema = z.object({
 
 type PlanItem = z.infer<typeof itemSchema> & {
   poiId?: string | null;
+  poiType?: string | null;
+  rating?: number | null;
   lng?: number | null;
   lat?: number | null;
 };
@@ -99,11 +102,12 @@ export class AiService {
     emit({ type: 'progress', text: '正在规划行程…' });
     const start = trip.startDate.toISOString().slice(0, 10);
     const end = trip.endDate.toISOString().slice(0, 10);
-    const weatherHint = await this.buildWeatherHint(
+    const weatherByDay = await this.buildWeatherMap(
       trip.destination,
       trip.startDate,
       trip.days.length,
     );
+    const weatherHint = this.formatWeatherHint(weatherByDay);
     const userPrompt =
       `目的地:${trip.destination}\n` +
       `日期:${start} 至 ${end},共 ${trip.days.length} 天\n` +
@@ -138,6 +142,7 @@ export class AiService {
       plan,
       preferences?.trim() || '生成行程',
       emit,
+      weatherByDay,
     );
   }
 
@@ -171,11 +176,12 @@ export class AiService {
         })),
       })),
     };
-    const weatherHint = await this.buildWeatherHint(
+    const weatherByDay = await this.buildWeatherMap(
       trip.destination,
       trip.startDate,
       trip.days.length,
     );
+    const weatherHint = this.formatWeatherHint(weatherByDay);
     const userPrompt =
       `当前行程:${JSON.stringify(current)}\n` +
       weatherHint +
@@ -203,7 +209,7 @@ export class AiService {
       emit({ type: 'error', message: '生成失败,请重试' });
       return;
     }
-    await this.finalize(tripId, trip.destination, plan, message, emit);
+    await this.finalize(tripId, trip.destination, plan, message, emit, weatherByDay);
   }
 
   /** 坐标补全(可选)+ 事务落库 + done 事件 */
@@ -213,12 +219,13 @@ export class AiService {
     plan: Plan,
     userText: string,
     emit: SseEmit,
+    weatherByDay?: Map<number, WeatherCast>,
   ) {
     if (this.amapKey) {
       emit({ type: 'progress', text: '正在补全地点坐标…' });
       await this.enrichCoordinates(plan, destination);
       emit({ type: 'progress', text: '正在按地理位置优化游览顺序…' });
-      this.optimizePlan(plan);
+      this.optimizePlan(plan, weatherByDay);
     }
     emit({ type: 'progress', text: '正在写入行程…' });
     const { dayCount, itemCount } = await this.applyPlan(
@@ -230,41 +237,59 @@ export class AiService {
   }
 
   /**
-   * 逐日天气预报提示(高德预报仅覆盖当天 + 未来 3 天,
-   * 行程与预报窗口重叠的天数才输出;未配置 Key / 接口失败 / 无重叠
-   * 时静默降级为空串,不影响生成主流程)。
+   * 逐日天气预报 Map(dayIndex → 当日预报)。
+   * 高德预报仅覆盖当天 + 未来 3 天,窗口外的天不进 Map;
+   * 未配置 Key / 接口失败时静默降级为空 Map,不影响生成主流程。
    */
+  private async buildWeatherMap(
+    destination: string,
+    startDate: Date,
+    dayCount: number,
+  ): Promise<Map<number, WeatherCast>> {
+    const result = new Map<number, WeatherCast>();
+    if (!this.amapKey) return result;
+    try {
+      const casts = await this.geo.getWeather(destination);
+      const byDate = new Map(casts.map((c) => [c.date, c]));
+      for (let i = 0; i < dayCount; i++) {
+        const key = new Date(startDate.getTime() + i * 86_400_000)
+          .toISOString()
+          .slice(0, 10);
+        const c = byDate.get(key);
+        if (c) result.set(i, c);
+      }
+    } catch (e) {
+      this.logger.warn(
+        `天气预报获取失败,按无天气信息继续: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+    return result;
+  }
+
+  /** 把天气 Map 格式化成提示词文本;空 Map → 空串 */
+  private formatWeatherHint(weatherByDay: Map<number, WeatherCast>): string {
+    const lines: string[] = [];
+    for (const [i, c] of [...weatherByDay.entries()].sort((a, b) => a[0] - b[0])) {
+      const weather =
+        c.dayWeather === c.nightWeather
+          ? c.dayWeather
+          : `${c.dayWeather}转${c.nightWeather}`;
+      lines.push(
+        `第${i + 1}天 ${c.date.slice(5)}:${weather} ${c.nightTemp}~${c.dayTemp}°C`,
+      );
+    }
+    return lines.length ? `天气预报:\n${lines.join('\n')}\n` : '';
+  }
+
+  /** 逐日天气预报提示词文本(buildWeatherMap + formatWeatherHint 的组合,保留以便测试) */
   private async buildWeatherHint(
     destination: string,
     startDate: Date,
     dayCount: number,
   ): Promise<string> {
-    if (!this.amapKey) return '';
-    try {
-      const casts = await this.geo.getWeather(destination);
-      if (!casts.length) return '';
-      const byDate = new Map(casts.map((c) => [c.date, c]));
-      const lines: string[] = [];
-      for (let i = 0; i < dayCount; i++) {
-        const d = new Date(startDate.getTime() + i * 86_400_000);
-        const key = d.toISOString().slice(0, 10);
-        const c = byDate.get(key);
-        if (!c) continue;
-        const weather =
-          c.dayWeather === c.nightWeather
-            ? c.dayWeather
-            : `${c.dayWeather}转${c.nightWeather}`;
-        lines.push(
-          `第${i + 1}天 ${key.slice(5)}:${weather} ${c.nightTemp}~${c.dayTemp}°C`,
-        );
-      }
-      return lines.length ? `天气预报:\n${lines.join('\n')}\n` : '';
-    } catch (e) {
-      this.logger.warn(
-        `天气预报获取失败,按无天气信息继续: ${e instanceof Error ? e.message : e}`,
-      );
-      return '';
-    }
+    return this.formatWeatherHint(
+      await this.buildWeatherMap(destination, startDate, dayCount),
+    );
   }
 
   /** 调用大模型产出经容错链校验的行程;Mock 模式直接返回模拟行程 */
@@ -398,7 +423,10 @@ export class AiService {
   private async enrichCoordinates(plan: Plan, destination: string) {
     for (const day of plan.days) {
       const targets = day.items.filter((it) => it.poiName);
-      const candidates = new Map<PlanItem, { id: string; lng: number; lat: number }[]>();
+      const candidates = new Map<
+        PlanItem,
+        { id: string; lng: number; lat: number; type: string }[]
+      >();
       await mapLimit(targets, 2, async (it) => {
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
@@ -406,7 +434,7 @@ export class AiService {
             const pois = await this.geo.searchPoi(it.poiName!, destination);
             candidates.set(
               it,
-              pois.map((p) => ({ id: p.id, lng: p.lng, lat: p.lat })),
+              pois.map((p) => ({ id: p.id, lng: p.lng, lat: p.lat, type: p.type })),
             );
             return;
           } catch {
@@ -446,19 +474,38 @@ export class AiService {
         it.poiId = best.id;
         it.lng = best.lng;
         it.lat = best.lat;
+        it.poiType = best.type;
       }
+
+      // 评分/细分类目:按 poiId 查 POI 详情(失败或缺数据不阻塞,评分可缺)
+      const withPoi = targets.filter((it) => it.poiId);
+      await mapLimit(withPoi, 2, async (it) => {
+        try {
+          const d = await this.geo.getPoiDetail(it.poiId!);
+          if (d) {
+            it.rating = d.rating;
+            if (d.type) it.poiType = d.type; // 详情类目更细,覆盖搜索类目
+          }
+        } catch {
+          this.logger.warn(`POI 详情查询失败: ${it.poiName}`);
+        }
+      });
     }
   }
 
   /**
    * 行程地理优化(TTDP 三段式,见 optimizer.ts):
    * 1. Cluster-first:跨天离群景点重分配,避免跨城折返;
-   * 2. Route-second:每天内部穷举精确排序(餐饮/住宿钉位),
+   * 2. 天气硬联动:雨天的户外景点与无雨天的室内景点双赢交换;
+   * 3. Route-second:每天内部穷举精确排序(餐饮/住宿钉位),
    *    代价 = 道路里程 + U 型折返转向惩罚;
-   * 3. Schedule-third:按点间距离估算交通耗时,重排时间轴。
+   * 4. Schedule-third:按点间距离估算交通耗时,重排时间轴。
    */
-  private optimizePlan(plan: Plan) {
+  private optimizePlan(plan: Plan, weatherByDay?: Map<number, WeatherCast>) {
     rebalanceDays(plan.days, (msg) => this.logger.warn(msg));
+    if (weatherByDay?.size) {
+      weatherAwareSwap(plan.days, weatherByDay, (msg) => this.logger.warn(msg));
+    }
     for (const day of plan.days) {
       optimizeDayOrder(day.items);
       reflowDayTimes(day.items);
@@ -490,6 +537,8 @@ export class AiService {
               type: it.type,
               title: it.title,
               poiId: it.poiId ?? null,
+              poiType: it.poiType ?? null,
+              rating: it.rating ?? null,
               lng: it.lng ?? null,
               lat: it.lat ?? null,
               startTime: it.startTime,

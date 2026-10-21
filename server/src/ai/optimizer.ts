@@ -18,10 +18,17 @@ export interface OptItem {
   endTime: string | null;
   lng?: number | null;
   lat?: number | null;
+  /** 高德 POI 类目串(「风景名胜;世界遗产」),用于室内外判断 */
+  poiType?: string | null;
 }
 export interface OptDay {
   dayIndex: number;
   items: OptItem[];
+}
+
+/** 天气判定的最小信息(高德 WeatherCast 结构兼容) */
+export interface DayWeatherInfo {
+  dayWeather: string;
 }
 
 export interface Pt {
@@ -47,6 +54,17 @@ const OUTLIER_KM = 60; // 距本天质心超过该值视为离群点
 const REJOIN_KM = 30; // 距另一天质心在该范围内才允许迁入
 const MAX_DAY_ITEMS = 6; // 迁入后目标天不超过该条目数(与 AI schema 的 3-6 一致)
 const MIN_DAY_ITEMS = 3; // 移出后源天不跌破该条目数
+const MAX_SWAP_DELTA_KM = 100; // 天气双赢交换允许的几何代价增量上限
+
+/** 高德 POI 类目 → 室内判断(保守:只命中明确室内类目,其余按户外对待) */
+const INDOOR_RE =
+  /博物馆|美术馆|纪念馆|图书馆|科技馆|展览馆|陈列馆|商场|购物中心|剧院|影院|茶馆|咖啡馆|咖啡厅|酒吧|室内|水族|海底世界|蜡像馆|会展中心/;
+export const isIndoorType = (poiType?: string | null): boolean =>
+  !!poiType && INDOOR_RE.test(poiType);
+
+const RAINY_RE = /雨|雪|冰雹/;
+export const isRainy = (w: DayWeatherInfo | undefined): boolean =>
+  !!w && RAINY_RE.test(w.dayWeather);
 
 function ptOf(it: OptItem): Pt | null {
   return it.lng != null && it.lat != null
@@ -259,6 +277,77 @@ export function rebalanceDays(
       }
     }
     if (!moved) return;
+  }
+}
+
+/**
+ * 天气硬联动(双赢交换):雨天里的户外景点 ↔ 无雨天里的室内景点。
+ * AI 提示词只做软引导,这里给确定性兜底:只交换「错配」的点
+ * (雨天的户外点 / 晴天的室内点),两天条目数 1 换 1 不变;
+ * 几何代价按最近邻插入近似,增量 ≤ MAX_SWAP_DELTA_KM 才执行,
+ * 最多 3 轮防振荡。交换后由调用方重新做日内排序与时间轴。
+ */
+export function weatherAwareSwap(
+  days: OptDay[],
+  weatherByDay: Map<number, DayWeatherInfo>,
+  warn?: (msg: string) => void,
+): void {
+  /** p 到 items 中最近有坐标点的距离(km) */
+  const nearestKm = (p: Pt, items: OptItem[]): number => {
+    let best = Infinity;
+    for (const it of items) {
+      const q = ptOf(it);
+      if (q) best = Math.min(best, haversineKm(p, q));
+    }
+    return best;
+  };
+
+  for (let round = 0; round < 3; round++) {
+    let swapped = false;
+    outer: for (const rainDay of days) {
+      if (!isRainy(weatherByDay.get(rainDay.dayIndex))) continue;
+      const outdoor = rainDay.items.filter(
+        (it) => it.type === 'SPOT' && ptOf(it) && !isIndoorType(it.poiType),
+      );
+      if (!outdoor.length) continue;
+      for (const fairDay of days) {
+        if (fairDay === rainDay) continue;
+        const wFair = weatherByDay.get(fairDay.dayIndex);
+        if (!wFair || isRainy(wFair)) continue;
+        const indoor = fairDay.items.filter(
+          (it) => it.type === 'SPOT' && ptOf(it) && isIndoorType(it.poiType),
+        );
+        if (!indoor.length) continue;
+        // 选几何代价增量最小的一对
+        let bestPair: [OptItem, OptItem] | null = null;
+        let bestDelta = Infinity;
+        for (const x of outdoor) {
+          const px = ptOf(x)!;
+          for (const y of indoor) {
+            const py = ptOf(y)!;
+            const delta =
+              nearestKm(px, fairDay.items) +
+              nearestKm(py, rainDay.items) -
+              nearestKm(px, rainDay.items) -
+              nearestKm(py, fairDay.items);
+            if (delta < bestDelta) {
+              bestDelta = delta;
+              bestPair = [x, y];
+            }
+          }
+        }
+        if (!bestPair || bestDelta > MAX_SWAP_DELTA_KM) continue;
+        const [x, y] = bestPair;
+        rainDay.items.splice(rainDay.items.indexOf(x), 1, y);
+        fairDay.items.splice(fairDay.items.indexOf(y), 1, x);
+        warn?.(
+          `天气联动:「${x.title}」(户外)与「${y.title}」(室内)已按天气互换到更合适的日期`,
+        );
+        swapped = true;
+        break outer;
+      }
+    }
+    if (!swapped) return;
   }
 }
 

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   haversineKm,
+  isIndoorType,
   optimizeDayOrder,
   rebalanceDays,
   reflowDayTimes,
   sequenceCost,
+  weatherAwareSwap,
   type OptItem,
 } from '../src/ai/optimizer.js';
 
@@ -185,6 +187,108 @@ describe('rebalanceDays(跨天离群点重分配)', () => {
     const days = [day(0, [...nearA(), mk('SPOT', '远点', 118.0, 30.0)])];
     rebalanceDays(days);
     expect(days[0]!.items).toHaveLength(4);
+  });
+});
+
+describe('isIndoorType(室内外分类)', () => {
+  it('博物馆/商场/茶馆 → 室内;风景名胜/公园 → 户外;空值 → 户外', () => {
+    expect(isIndoorType('科教文化服务;博物馆;博物馆')).toBe(true);
+    expect(isIndoorType('购物服务;商场;购物中心')).toBe(true);
+    expect(isIndoorType('餐饮服务;茶艺馆;茶馆')).toBe(true);
+    expect(isIndoorType('风景名胜;风景名胜;世界遗产')).toBe(false);
+    expect(isIndoorType('风景名胜;公园广场;公园')).toBe(false);
+    expect(isIndoorType(null)).toBe(false);
+    expect(isIndoorType(undefined)).toBe(false);
+  });
+});
+
+describe('weatherAwareSwap(雨雪天双赢交换)', () => {
+  const day = (dayIndex: number, items: OptItem[]) => ({ dayIndex, items });
+  const typed = (
+    title: string,
+    lng: number,
+    lat: number,
+    poiType: string,
+  ): OptItem => ({ ...mk('SPOT', title, lng, lat), poiType });
+  const OUTDOOR = '风景名胜;风景名胜;公园';
+  const INDOOR = '科教文化服务;博物馆;博物馆';
+
+  it('雨天户外点与晴天室内点互换,两天条目数不变', () => {
+    // Day0 小雨(全户外),Day1 晴(博物馆 + 两户外);两地相距 ~47km,增量有界
+    const days = [
+      day(0, [
+        typed('A1', 116.0, 30.0, OUTDOOR),
+        typed('A2', 116.01, 30.0, OUTDOOR),
+        typed('远郊公园X', 116.02, 30.0, OUTDOOR),
+      ]),
+      day(1, [
+        typed('博物馆M', 116.5, 30.0, INDOOR),
+        typed('B1', 116.51, 30.0, OUTDOOR),
+        typed('B2', 116.52, 30.0, OUTDOOR),
+      ]),
+    ];
+    const weather = new Map([
+      [0, { dayWeather: '小雨' }],
+      [1, { dayWeather: '晴' }],
+    ]);
+    const warn = vi.fn();
+    weatherAwareSwap(days, weather, warn);
+    // 雨天的户外 X 换去了晴天,晴天的室内 M 换进了雨天
+    expect(days[0]!.items.map((i) => i.title)).toContain('博物馆M');
+    expect(days[0]!.items.map((i) => i.title)).not.toContain('远郊公园X');
+    expect(days[1]!.items.map((i) => i.title)).toContain('远郊公园X');
+    expect(days[0]!.items).toHaveLength(3);
+    expect(days[1]!.items).toHaveLength(3);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('几何代价增量超阈值(远距互换)时不交换', () => {
+    // 博物馆在 ~190km 外,互换要增加 ~380km,宁可不换
+    const days = [
+      day(0, [
+        typed('A1', 116.0, 30.0, OUTDOOR),
+        typed('A2', 116.01, 30.0, OUTDOOR),
+        typed('远郊公园X', 116.02, 30.0, OUTDOOR),
+      ]),
+      day(1, [
+        typed('远方博物馆M', 118.0, 30.0, INDOOR),
+        typed('B1', 118.01, 30.0, OUTDOOR),
+        typed('B2', 118.02, 30.0, OUTDOOR),
+      ]),
+    ];
+    const weather = new Map([
+      [0, { dayWeather: '中雨' }],
+      [1, { dayWeather: '多云' }],
+    ]);
+    weatherAwareSwap(days, weather);
+    expect(days[0]!.items.map((i) => i.title)).toContain('远郊公园X');
+    expect(days[1]!.items.map((i) => i.title)).toContain('远方博物馆M');
+  });
+
+  it('两天都是晴天时不交换', () => {
+    const days = [
+      day(0, [typed('A1', 116.0, 30.0, OUTDOOR), typed('X', 116.02, 30.0, OUTDOOR)]),
+      day(1, [typed('M', 116.5, 30.0, INDOOR), typed('B1', 116.51, 30.0, OUTDOOR)]),
+    ];
+    const weather = new Map([
+      [0, { dayWeather: '晴' }],
+      [1, { dayWeather: '多云' }],
+    ]);
+    weatherAwareSwap(days, weather);
+    expect(days[0]!.items.map((i) => i.title)).toEqual(['A1', 'X']);
+  });
+
+  it('两天都下雨时不交换(雨天换雨天无意义)', () => {
+    const days = [
+      day(0, [typed('A1', 116.0, 30.0, OUTDOOR), typed('X', 116.02, 30.0, OUTDOOR)]),
+      day(1, [typed('M', 116.5, 30.0, INDOOR), typed('B1', 116.51, 30.0, OUTDOOR)]),
+    ];
+    const weather = new Map([
+      [0, { dayWeather: '小雨' }],
+      [1, { dayWeather: '雷阵雨' }],
+    ]);
+    weatherAwareSwap(days, weather);
+    expect(days[0]!.items.map((i) => i.title)).toEqual(['A1', 'X']);
   });
 });
 

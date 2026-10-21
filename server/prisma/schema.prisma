@@ -81,6 +81,8 @@ model ItineraryItem {
   type       ItemType @default(SPOT)
   title      String
   poiId      String?
+  poiType    String?
+  rating     Float?
   lng        Float?
   lat        Float?
   startTime  String?

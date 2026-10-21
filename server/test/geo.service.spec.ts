@@ -138,6 +138,61 @@ describe('GeoService', () => {
     });
   });
 
+  describe('getPoiDetail POI 详情', () => {
+    const amapDetailResponse = {
+      status: '1',
+      pois: [
+        {
+          id: 'B000A7O1CU',
+          name: '颐和园',
+          type: '风景名胜;风景名胜;世界遗产',
+          tel: '010-62881144',
+          biz_ext: { rating: '4.9' },
+        },
+      ],
+    };
+
+    it('成功解析:评分转数字、类目/电话保留;同 id 调两次 fetch 只调 1 次', async () => {
+      fetchMock.mockResolvedValue(okFetch(amapDetailResponse));
+      const first = await service.getPoiDetail('B000A7O1CU');
+      const second = await service.getPoiDetail('B000A7O1CU');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(first).toEqual({
+        id: 'B000A7O1CU',
+        name: '颐和园',
+        type: '风景名胜;风景名胜;世界遗产',
+        tel: '010-62881144',
+        rating: 4.9,
+      });
+      expect(second).toEqual(first);
+    });
+
+    it('高德无评分/电话数据(空数组):归一为 null', async () => {
+      fetchMock.mockResolvedValue(
+        okFetch({
+          status: '1',
+          pois: [
+            {
+              id: 'X',
+              name: '小馆',
+              type: '餐饮服务',
+              tel: [],
+              biz_ext: { rating: [] },
+            },
+          ],
+        }),
+      );
+      const d = await service.getPoiDetail('X');
+      expect(d?.rating).toBeNull();
+      expect(d?.tel).toBeNull();
+    });
+
+    it('POI 不存在(pois 为空):返回 null', async () => {
+      fetchMock.mockResolvedValue(okFetch({ status: '1', pois: [] }));
+      await expect(service.getPoiDetail('NONE')).resolves.toBeNull();
+    });
+  });
+
   describe('routes 批量', () => {
     const near = { lng: 120.0, lat: 30.0 };
     const mid = { lng: 120.01, lat: 30.0 }; // 距 near 约 1km

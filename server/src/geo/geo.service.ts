@@ -45,6 +45,17 @@ export interface WeatherCast {
   nightTemp: number;
 }
 
+/** 高德 POI 详情(评分/电话/细分类目) */
+export interface PoiDetail {
+  id: string;
+  name: string;
+  /** 细分类目串,如「风景名胜;风景名胜;世界遗产」 */
+  type: string;
+  tel: string | null;
+  /** 0-5 分;高德无评分数据时为 null */
+  rating: number | null;
+}
+
 interface CacheEntry {
   data: unknown;
   expireAt: number;
@@ -144,6 +155,34 @@ export class GeoService {
       .filter((c) => c.date);
     this.setCached(cacheKey, casts);
     return casts;
+  }
+
+  /** 高德 POI 详情:评分在 biz_ext 里,无数据时高德给空串/空数组,统一归一为 null */
+  async getPoiDetail(id: string): Promise<PoiDetail | null> {
+    const key = this.amapKey();
+    const cacheKey = `poidetail:${id}`;
+    const cached = this.getCached<PoiDetail | null>(cacheKey);
+    if (cached) return cached;
+    const url = `https://restapi.amap.com/v3/place/detail?key=${key}&id=${encodeURIComponent(id)}`;
+    const data = await this.fetchJson(url);
+    const p = ((data.pois ?? []) as Record<string, unknown>[])[0];
+    if (!p) return null;
+    const biz = (p.biz_ext ?? {}) as Record<string, unknown>;
+    const ratingNum = Number(biz.rating);
+    const detail: PoiDetail = {
+      id: String(p.id ?? id),
+      name: String(p.name ?? ''),
+      type: String(p.type ?? ''),
+      tel: typeof p.tel === 'string' && p.tel ? p.tel : null,
+      rating:
+        typeof biz.rating === 'string' &&
+        biz.rating.trim() !== '' &&
+        Number.isFinite(ratingNum)
+          ? ratingNum
+          : null,
+    };
+    this.setCached(cacheKey, detail);
+    return detail;
   }
 
   /** 高德路径规划,返回首条方案的距离/时长/ polyline */

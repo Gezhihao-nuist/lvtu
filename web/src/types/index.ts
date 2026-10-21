@@ -13,6 +13,9 @@ export interface ItineraryItem {
   type: ItemType
   title: string
   poiId: string | null
+  poiType: string | null
+  /** 高德 POI 评分(0-5);无评分数据为 null */
+  rating: number | null
   lng: number | null
   lat: number | null
   startTime: string | null

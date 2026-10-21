@@ -35,6 +35,7 @@ describe('AiService', () => {
   let geoMock: {
     searchPoi: ReturnType<typeof vi.fn>;
     getWeather: ReturnType<typeof vi.fn>;
+    getPoiDetail: ReturnType<typeof vi.fn>;
   };
   let configMock: { get: ReturnType<typeof vi.fn> };
 
@@ -48,6 +49,7 @@ describe('AiService', () => {
     geoMock = {
       searchPoi: vi.fn(),
       getWeather: vi.fn().mockResolvedValue([]),
+      getPoiDetail: vi.fn().mockResolvedValue(null),
     };
     configMock = { get: vi.fn().mockReturnValue('') };
     service = new AiService(
@@ -374,6 +376,49 @@ describe('AiService', () => {
       expect(food.lng).toBeCloseTo(116.01);
     });
 
+    it('拿到 poiId 后写入 POI 详情的评分与细分类目', async () => {
+      const plan: EnrichPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              {
+                type: 'SPOT' as const,
+                title: '颐和园',
+                poiName: '颐和园',
+                startTime: '09:00',
+                endTime: '11:00',
+                cost: 30,
+                note: null,
+              },
+            ],
+          },
+        ],
+      };
+      geoMock.searchPoi.mockResolvedValue([
+        {
+          id: 'B000A7O1CU',
+          name: '颐和园',
+          type: '风景名胜',
+          address: '',
+          lng: 116.27,
+          lat: 39.99,
+        },
+      ]);
+      geoMock.getPoiDetail.mockResolvedValue({
+        id: 'B000A7O1CU',
+        name: '颐和园',
+        type: '风景名胜;风景名胜;世界遗产',
+        tel: '010-62881144',
+        rating: 4.9,
+      });
+      await service['enrichCoordinates'](plan, '北京');
+      const spot = plan.days[0]!.items[0]!;
+      expect(spot.poiId).toBe('B000A7O1CU');
+      expect((spot as { rating?: number }).rating).toBe(4.9);
+      expect((spot as { poiType?: string }).poiType).toContain('世界遗产');
+    });
+
     it('最近候选仍超过 60km 时放弃坐标(宁缺勿错)', async () => {
       const plan: EnrichPlan = {
         days: [
@@ -471,6 +516,50 @@ describe('AiService', () => {
       const hint = await service['buildWeatherHint']('安庆', start, 3);
       expect(hint).toBe('');
       expect(geoMock.getWeather).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('buildWeatherMap(逐日天气 Map)', () => {
+    const casts = [
+      {
+        date: '2026-10-22',
+        dayWeather: '小雨',
+        nightWeather: '阴',
+        dayTemp: 19,
+        nightTemp: 13,
+      },
+      {
+        date: '2026-10-23',
+        dayWeather: '晴',
+        nightWeather: '晴',
+        dayTemp: 24,
+        nightTemp: 15,
+      },
+    ];
+
+    it('窗口内的天进 Map,窗口外不进', async () => {
+      configMock.get.mockReturnValue('amap-key');
+      geoMock.getWeather.mockResolvedValue(casts);
+      const map = await service['buildWeatherMap'](
+        '安庆',
+        new Date('2026-10-22T00:00:00.000Z'),
+        4,
+      );
+      expect(map.size).toBe(2);
+      expect(map.get(0)?.dayWeather).toBe('小雨');
+      expect(map.get(1)?.dayWeather).toBe('晴');
+      expect(map.has(2)).toBe(false);
+    });
+
+    it('接口失败:返回空 Map 不抛错', async () => {
+      configMock.get.mockReturnValue('amap-key');
+      geoMock.getWeather.mockRejectedValue(new Error('高德挂了'));
+      const map = await service['buildWeatherMap'](
+        '安庆',
+        new Date('2026-10-22T00:00:00.000Z'),
+        3,
+      );
+      expect(map.size).toBe(0);
     });
   });
 });
