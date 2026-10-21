@@ -18,7 +18,7 @@ export type SseEmit = (data: Record<string, unknown>) => void;
 
 const SYSTEM_PROMPT = `你是专业旅行规划师。根据用户给出的目的地、天数、日期与偏好,输出 JSON 格式行程。
 输出 schema:{"days":[{"dayIndex":0,"items":[{"type":"SPOT"|"FOOD"|"HOTEL"|"TRANSPORT","title":string,"poiName":string|null,"startTime":"HH:mm"|null,"endTime":"HH:mm"|null,"cost":number|null,"note":string|null}]}]}
-要求:每天 3-6 项;节奏合理(景点→午餐→景点→晚餐);poiName 尽量使用高德地图能搜到的正式地名;绝不输出经纬度;note 用一两句口语化中文说清看点或贴士,避免 AI 腔,不要出现「赋能」「沉浸式」这类词;dayIndex 从 0 开始;只输出 JSON,不要输出任何解释。`;
+要求:每天 3-6 项;节奏合理(景点→午餐→景点→晚餐);**地理位置就近原则:同一天的景点必须集中在同一区域(同一城区/县城/景区),按游览顺序就近排列,不走回头路;相隔较远的区域分到不同天;餐厅要选在当天游览区域的附近**;poiName 尽量使用高德地图能搜到的正式地名;绝不输出经纬度;note 用一两句口语化中文说清看点或贴士,避免 AI 腔,不要出现「赋能」「沉浸式」这类词;dayIndex 从 0 开始;只输出 JSON,不要输出任何解释。`;
 
 const itemSchema = z.object({
   type: z.enum(['SPOT', 'FOOD', 'HOTEL', 'TRANSPORT']),
@@ -199,6 +199,8 @@ export class AiService {
     if (this.amapKey) {
       emit({ type: 'progress', text: '正在补全地点坐标…' });
       await this.enrichCoordinates(plan, destination);
+      emit({ type: 'progress', text: '正在按地理位置优化游览顺序…' });
+      this.optimizePlan(plan);
     }
     emit({ type: 'progress', text: '正在写入行程…' });
     const { dayCount, itemCount } = await this.applyPlan(
@@ -323,30 +325,173 @@ export class AiService {
     return this.client;
   }
 
-  /** 对每个 poiName 反查高德 POI 补经纬度,搜不到留 null;并发限制 2 + 失败重试一次,规避高德个人 Key 的 QPS 限制 */
+  /** 两点球面直线距离(km) */
+  private haversineKm(
+    a: { lng: number; lat: number },
+    b: { lng: number; lat: number },
+  ): number {
+    const rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad;
+    const dLng = (b.lng - a.lng) * rad;
+    const s =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+    return 2 * 6371 * Math.asin(Math.sqrt(s));
+  }
+
+  /**
+   * 对每个 poiName 反查高德 POI 补经纬度。
+   * 防错位:每天以首个景点为锚点,每项从候选 POI 中选离锚点最近的一个;
+   * 最近候选仍超过 60km 则放弃坐标(宁缺勿错,避免餐厅被匹配到 80km 外)。
+   * 并发限制 2 + 失败重试一次,规避高德个人 Key 的 QPS 限制。
+   */
   private async enrichCoordinates(plan: Plan, destination: string) {
-    const targets = plan.days
-      .flatMap((d) => d.items)
-      .filter((it) => it.poiName);
-    await mapLimit(targets, 2, async (it) => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          if (attempt > 0) await new Promise((r) => setTimeout(r, 500));
-          const pois = await this.geo.searchPoi(it.poiName!, destination);
-          const first = pois[0];
-          if (first) {
-            it.poiId = first.id;
-            it.lng = first.lng;
-            it.lat = first.lat;
+    for (const day of plan.days) {
+      const targets = day.items.filter((it) => it.poiName);
+      const candidates = new Map<PlanItem, { id: string; lng: number; lat: number }[]>();
+      await mapLimit(targets, 2, async (it) => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            if (attempt > 0) await new Promise((r) => setTimeout(r, 500));
+            const pois = await this.geo.searchPoi(it.poiName!, destination);
+            candidates.set(
+              it,
+              pois.map((p) => ({ id: p.id, lng: p.lng, lat: p.lat })),
+            );
+            return;
+          } catch {
+            if (attempt === 1) {
+              this.logger.warn(`POI 查询失败: ${it.poiName}`);
+            }
           }
-          return;
-        } catch {
-          if (attempt === 1) {
-            this.logger.warn(`POI 查询失败: ${it.poiName}`);
+        }
+      });
+
+      // 天锚点:第一个有候选的 SPOT 的首选坐标
+      const anchorItem = day.items.find(
+        (it) => it.type === 'SPOT' && (candidates.get(it)?.length ?? 0) > 0,
+      );
+      const anchor = anchorItem ? candidates.get(anchorItem)![0] : null;
+
+      for (const it of targets) {
+        const list = candidates.get(it);
+        if (!list?.length) continue;
+        let best = list[0]!;
+        if (anchor) {
+          let bestDist = Infinity;
+          for (const c of list) {
+            const d = this.haversineKm(anchor, c);
+            if (d < bestDist) {
+              bestDist = d;
+              best = c;
+            }
+          }
+          if (bestDist > 60) {
+            this.logger.warn(
+              `POI 偏离当天区域(${Math.round(bestDist)}km),放弃坐标: ${it.poiName}`,
+            );
+            continue;
+          }
+        }
+        it.poiId = best.id;
+        it.lng = best.lng;
+        it.lat = best.lat;
+      }
+    }
+  }
+
+  /**
+   * 每日顺序地理优化:消除 zigzag 折返。
+   * FOOD/HOTEL/无坐标项钉在原位置(饭点与住宿不动),
+   * 其余有坐标项用最近邻 + 2-opt 重排,最后按类型时长重排时间轴。
+   */
+  private optimizePlan(plan: Plan) {
+    for (const day of plan.days) {
+      const pinned = (it: PlanItem) =>
+        it.type === 'FOOD' ||
+        it.type === 'HOTEL' ||
+        it.lng == null ||
+        it.lat == null;
+      const movableIdx = day.items
+        .map((it, i) => ({ it, i }))
+        .filter(({ it }) => !pinned(it));
+      if (movableIdx.length < 3) continue; // 少于 3 个可动项没有优化空间
+
+      const movable = movableIdx.map(({ it }) => it);
+      // 最近邻构造初始解(从原第一个可动项出发)
+      const remaining = movable.slice(1);
+      let route = [movable[0]!];
+      while (remaining.length) {
+        const last = route[route.length - 1]!;
+        let bi = 0;
+        let bd = Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+          const d = this.haversineKm(
+            { lng: last.lng!, lat: last.lat! },
+            { lng: remaining[i]!.lng!, lat: remaining[i]!.lat! },
+          );
+          if (d < bd) {
+            bd = d;
+            bi = i;
+          }
+        }
+        route.push(remaining.splice(bi, 1)[0]!);
+      }
+      // 2-opt 改进
+      const leg = (a: PlanItem, b: PlanItem) =>
+        this.haversineKm(
+          { lng: a.lng!, lat: a.lat! },
+          { lng: b.lng!, lat: b.lat! },
+        );
+      const total = (r: PlanItem[]) =>
+        r.slice(0, -1).reduce((s, it, i) => s + leg(it, r[i + 1]!), 0);
+      let improved = true;
+      let guard = 0;
+      while (improved && guard++ < 50) {
+        improved = false;
+        for (let i = 1; i < route.length - 1; i++) {
+          for (let j = i + 1; j < route.length; j++) {
+            const candidate = [
+              ...route.slice(0, i),
+              ...route.slice(i, j + 1).reverse(),
+              ...route.slice(j + 1),
+            ];
+            if (total(candidate) + 0.01 < total(route)) {
+              route = candidate;
+              improved = true;
+            }
           }
         }
       }
-    });
+      // 重组:钉住的保持原位,可动位按优化后顺序填回
+      let k = 0;
+      day.items = day.items.map((it) => (pinned(it) ? it : route[k++]!));
+      this.reflowTimes(day.items);
+    }
+  }
+
+  /** 按顺序重排一天的时间轴:08:30 开始,项间留 30 分钟交通缓冲 */
+  private reflowTimes(items: PlanItem[]) {
+    const defaultDur: Record<PlanItem['type'], number> = {
+      SPOT: 120,
+      FOOD: 60,
+      TRANSPORT: 45,
+      HOTEL: 0,
+    };
+    const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
+    const toHHmm = (m: number) =>
+      `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    let cursor = items[0]?.startTime ? toMin(items[0].startTime) : 8 * 60 + 30;
+    for (const it of items) {
+      let dur = defaultDur[it.type];
+      if (it.startTime && it.endTime) {
+        const d = toMin(it.endTime) - toMin(it.startTime);
+        if (d >= 15 && d <= 360) dur = d;
+      }
+      it.startTime = toHHmm(cursor);
+      it.endTime = it.type === 'HOTEL' ? null : toHHmm(cursor + dur);
+      cursor += dur + 30;
+    }
   }
 
   /** 事务内重建该 trip 全部 items,并写入一条 AI 对话记录 */

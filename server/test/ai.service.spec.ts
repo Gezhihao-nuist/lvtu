@@ -174,4 +174,237 @@ describe('AiService', () => {
       });
     });
   });
+
+  describe('optimizePlan(每日地理优化)', () => {
+    type OptPlan = {
+      days: {
+        dayIndex: number;
+        items: ({
+          type: 'SPOT' | 'FOOD' | 'HOTEL' | 'TRANSPORT';
+          title: string;
+          poiName: string | null;
+          startTime: string | null;
+          endTime: string | null;
+          cost: number | null;
+          note: string | null;
+          lng?: number | null;
+          lat?: number | null;
+        })[];
+      }[];
+    };
+    const mkItem = (
+      type: 'SPOT' | 'FOOD' | 'HOTEL' | 'TRANSPORT',
+      title: string,
+      lng: number | null,
+      lat: number | null,
+    ) => ({
+      type,
+      title,
+      poiName: title,
+      startTime: '09:00',
+      endTime: '11:00',
+      cost: 0,
+      note: null,
+      lng,
+      lat,
+    });
+    const totalKm = (items: { lng?: number | null; lat?: number | null }[]) => {
+      let sum = 0;
+      for (let i = 0; i + 1 < items.length; i++) {
+        const a = items[i];
+        const b = items[i + 1];
+        if (a?.lng != null && b?.lng != null) {
+          sum += service['haversineKm'](
+            { lng: a.lng!, lat: a.lat! },
+            { lng: b.lng!, lat: b.lat! },
+          );
+        }
+      }
+      return sum;
+    };
+
+    it('zigzag 折返被重排:A→100km 外 B→A 附近 C,优化后 C 紧跟 A', () => {
+      const plan: OptPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              mkItem('SPOT', 'A景点', 116.0, 30.0),
+              mkItem('SPOT', 'B远山', 117.0, 30.0), // ~97km
+              mkItem('FOOD', '午餐', 116.01, 30.0), // 钉在 idx2
+              mkItem('SPOT', 'C景点', 116.02, 30.0), // 离 A ~2km
+              mkItem('HOTEL', '住宿', 116.0, 30.01), // 钉在 idx4
+            ],
+          },
+        ],
+      };
+      const before = totalKm(plan.days[0]!.items);
+      service['optimizePlan'](plan);
+      const items = plan.days[0]!.items;
+      expect(items[2]!.title).toBe('午餐'); // FOOD 位置不动
+      expect(items[4]!.title).toBe('住宿'); // HOTEL 位置不动
+      expect(items[1]!.title).toBe('C景点'); // 近的点排到 A 后面
+      expect(totalKm(items)).toBeLessThan(before);
+    });
+
+    it('可动项少于 3 个时不改变顺序', () => {
+      const plan: OptPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              mkItem('SPOT', 'A', 116.0, 30.0),
+              mkItem('SPOT', 'B', 117.0, 30.0),
+              mkItem('HOTEL', '住宿', 116.0, 30.0),
+            ],
+          },
+        ],
+      };
+      service['optimizePlan'](plan);
+      expect(plan.days[0]!.items.map((i) => i.title)).toEqual([
+        'A',
+        'B',
+        '住宿',
+      ]);
+    });
+
+    it('重排后时间轴严格递增且不重叠', () => {
+      const plan: OptPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              mkItem('SPOT', 'A景点', 116.0, 30.0),
+              mkItem('SPOT', 'B远山', 117.0, 30.0),
+              mkItem('FOOD', '午餐', 116.01, 30.0),
+              mkItem('SPOT', 'C景点', 116.02, 30.0),
+              mkItem('HOTEL', '住宿', 116.0, 30.01),
+            ],
+          },
+        ],
+      };
+      service['optimizePlan'](plan);
+      const items = plan.days[0]!.items;
+      const toMin = (t: string | null) =>
+        t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3)) : null;
+      let prevEnd = -1;
+      for (const it of items) {
+        const s = toMin(it.startTime);
+        expect(s).not.toBeNull();
+        expect(s!).toBeGreaterThanOrEqual(prevEnd);
+        const e = toMin(it.endTime);
+        if (e !== null) prevEnd = e;
+        else prevEnd = s!;
+      }
+    });
+  });
+
+  describe('enrichCoordinates(防 POI 错位)', () => {
+    type EnrichPlan = {
+      days: {
+        dayIndex: number;
+        items: {
+          type: 'SPOT' | 'FOOD';
+          title: string;
+          poiName: string;
+          startTime: string;
+          endTime: string;
+          cost: number;
+          note: null;
+          poiId?: string;
+          lng?: number;
+          lat?: number;
+        }[];
+      }[];
+    };
+    it('FOOD 候选选离天锚点最近的,而不是列表第一个', async () => {
+      const plan: EnrichPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              {
+                type: 'SPOT' as const,
+                title: '花亭湖风景区',
+                poiName: '花亭湖风景区',
+                startTime: '09:00',
+                endTime: '11:00',
+                cost: 0,
+                note: null,
+              },
+              {
+                type: 'FOOD' as const,
+                title: '湖边鱼馆午饭',
+                poiName: '湖边鱼馆',
+                startTime: '12:00',
+                endTime: '13:00',
+                cost: 50,
+                note: null,
+              },
+            ],
+          },
+        ],
+      };
+      geoMock.searchPoi.mockImplementation((name: string) => {
+        if (name === '花亭湖风景区') {
+          return Promise.resolve([
+            { id: 'spot', name, type: '风景名胜', address: '', lng: 116.0, lat: 30.0 },
+          ]);
+        }
+        // 餐厅:第一个候选在 78km 外(错误匹配),第二个在景区旁
+        return Promise.resolve([
+          { id: 'far', name, type: '餐饮', address: '', lng: 116.8, lat: 30.0 },
+          { id: 'near', name, type: '餐饮', address: '', lng: 116.01, lat: 30.0 },
+        ]);
+      });
+      await service['enrichCoordinates'](plan, '安庆');
+      const food = plan.days[0]!.items[1]!;
+      expect(food.poiId).toBe('near');
+      expect(food.lng).toBeCloseTo(116.01);
+    });
+
+    it('最近候选仍超过 60km 时放弃坐标(宁缺勿错)', async () => {
+      const plan: EnrichPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              {
+                type: 'SPOT' as const,
+                title: '花亭湖风景区',
+                poiName: '花亭湖风景区',
+                startTime: '09:00',
+                endTime: '11:00',
+                cost: 0,
+                note: null,
+              },
+              {
+                type: 'FOOD' as const,
+                title: '神秘餐厅',
+                poiName: '神秘餐厅',
+                startTime: '12:00',
+                endTime: '13:00',
+                cost: 50,
+                note: null,
+              },
+            ],
+          },
+        ],
+      };
+      geoMock.searchPoi.mockImplementation((name: string) => {
+        if (name === '花亭湖风景区') {
+          return Promise.resolve([
+            { id: 'spot', name, type: '风景名胜', address: '', lng: 116.0, lat: 30.0 },
+          ]);
+        }
+        return Promise.resolve([
+          { id: 'far', name, type: '餐饮', address: '', lng: 117.0, lat: 30.0 },
+        ]);
+      });
+      await service['enrichCoordinates'](plan, '安庆');
+      const food = plan.days[0]!.items[1]!;
+      expect(food.lng).toBeUndefined();
+      expect(food.lat).toBeUndefined();
+    });
+  });
 });
