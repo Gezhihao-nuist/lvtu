@@ -5,6 +5,7 @@ import { motion } from 'framer-motion'
 import { CalendarDays, Copy, MapPin, MoreVertical, Plus, Route, Trash2, Wallet } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange, formatMoney } from '../../lib/format'
+import { cityCover } from './city-covers'
 import type { TripSummary } from '../../types'
 import { AppHeader } from '../../components/layout/app-header'
 import { Button } from '../../components/ui/button'
@@ -46,17 +47,16 @@ function TripCard({
       className="group relative cursor-pointer overflow-hidden rounded-2xl border border-zinc-200/70 bg-white shadow-card transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-float"
       onClick={() => navigate(`/trips/${trip.id}`)}
     >
-      {/* 封面:有图用图,无图用目的地首字渐变 */}
-      <div className="relative h-36">
-        {trip.coverUrl ? (
-          <img src={trip.coverUrl} alt="" className="size-full object-cover" loading="lazy" />
-        ) : (
-          <div className="flex size-full items-center justify-center bg-gradient-to-br from-accent-500 to-accent-700">
-            <span className="text-4xl font-semibold text-white/95">
-              {trip.destination.slice(0, 1)}
-            </span>
-          </div>
-        )}
+      {/* 封面:自定义图优先,否则用对应城市实景图(object-cover 裁切填充,不变形不溢出) */}
+      <div className="relative h-36 overflow-hidden bg-zinc-100">
+        <img
+          src={trip.coverUrl ?? cityCover(trip.destination)}
+          alt=""
+          width={800}
+          height={450}
+          loading="lazy"
+          className="size-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.03]"
+        />
         <div onClick={(e) => e.stopPropagation()} className="absolute right-2.5 top-2.5">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
