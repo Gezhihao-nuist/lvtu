@@ -36,6 +36,7 @@ describe('AiService', () => {
     searchPoi: ReturnType<typeof vi.fn>;
     getWeather: ReturnType<typeof vi.fn>;
     getPoiDetail: ReturnType<typeof vi.fn>;
+    getCityCenter: ReturnType<typeof vi.fn>;
   };
   let configMock: { get: ReturnType<typeof vi.fn> };
 
@@ -50,6 +51,7 @@ describe('AiService', () => {
       searchPoi: vi.fn(),
       getWeather: vi.fn().mockResolvedValue([]),
       getPoiDetail: vi.fn().mockResolvedValue(null),
+      getCityCenter: vi.fn().mockResolvedValue({ lng: 116.0, lat: 30.0 }),
     };
     configMock = { get: vi.fn().mockReturnValue('') };
     service = new AiService(
@@ -395,6 +397,7 @@ describe('AiService', () => {
           },
         ],
       };
+      geoMock.getCityCenter.mockResolvedValue({ lng: 116.3, lat: 39.9 }); // 北京
       geoMock.searchPoi.mockResolvedValue([
         {
           id: 'B000A7O1CU',
@@ -417,6 +420,128 @@ describe('AiService', () => {
       expect(spot.poiId).toBe('B000A7O1CU');
       expect((spot as { rating?: number }).rating).toBe(4.9);
       expect((spot as { poiType?: string }).poiType).toContain('世界遗产');
+    });
+
+    it('SPOT 距锚点超 60km 但在目的地半径内:保留坐标(漠河北极村场景)', async () => {
+      const plan: EnrichPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              {
+                type: 'SPOT' as const,
+                title: '漠河市区广场',
+                poiName: '北极星广场',
+                startTime: '09:00',
+                endTime: '10:00',
+                cost: 0,
+                note: null,
+              },
+              {
+                type: 'SPOT' as const,
+                title: '北极村',
+                poiName: '北极村',
+                startTime: '10:30',
+                endTime: '17:00',
+                cost: 68,
+                note: null,
+              },
+            ],
+          },
+        ],
+      };
+      // 目的地中心=漠河市区;北极村距市区 ~170km(≤200km 半径,真实远景点)
+      geoMock.searchPoi.mockImplementation((name: string) => {
+        if (name === '北极星广场') {
+          return Promise.resolve([
+            { id: 'sq', name, type: '风景名胜', address: '', lng: 116.0, lat: 30.0 },
+          ]);
+        }
+        return Promise.resolve([
+          { id: 'bjc', name, type: '风景名胜', address: '', lng: 117.5, lat: 31.0 },
+        ]);
+      });
+      await service['enrichCoordinates'](plan, '漠河');
+      const village = plan.days[0]!.items[1]!;
+      expect(village.poiId).toBe('bjc');
+      expect(village.lng).toBeCloseTo(117.5);
+    });
+
+    it('候选均超出目的地半径(外省重名,漠河实测 2308km):剔除并放弃坐标', async () => {
+      const plan: EnrichPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              {
+                type: 'SPOT' as const,
+                title: '漠河市区广场',
+                poiName: '北极星广场',
+                startTime: '09:00',
+                endTime: '10:00',
+                cost: 0,
+                note: null,
+              },
+              {
+                type: 'SPOT' as const,
+                title: '松苑原始森林公园',
+                poiName: '松苑原始森林公园',
+                startTime: '10:30',
+                endTime: '12:00',
+                cost: 0,
+                note: null,
+              },
+            ],
+          },
+        ],
+      };
+      geoMock.searchPoi.mockImplementation((name: string) => {
+        if (name === '北极星广场') {
+          return Promise.resolve([
+            { id: 'sq', name, type: '风景名胜', address: '', lng: 116.0, lat: 30.0 },
+          ]);
+        }
+        // 高德返回的「建议结果」全在 2300km 外的外省
+        return Promise.resolve([
+          { id: 'junk', name, type: '风景名胜', address: '', lng: 116.4, lat: 39.9 },
+        ]);
+      });
+      await service['enrichCoordinates'](plan, '漠河');
+      const park = plan.days[0]!.items[1]!;
+      expect(park.poiId).toBeUndefined();
+      expect(park.lng).toBeUndefined();
+    });
+
+    it('城市限定无结果:用「目的地+名称」重搜(圣诞村场景)', async () => {
+      const plan: EnrichPlan = {
+        days: [
+          {
+            dayIndex: 0,
+            items: [
+              {
+                type: 'SPOT' as const,
+                title: '圣诞村',
+                poiName: '圣诞村',
+                startTime: '14:00',
+                endTime: '16:00',
+                cost: 60,
+                note: null,
+              },
+            ],
+          },
+        ],
+      };
+      geoMock.searchPoi.mockImplementation((keyword: string, city?: string) => {
+        if (city === '漠河') return Promise.resolve([]); // 城市限定搜不到
+        return Promise.resolve([
+          { id: 'xms', name: '北极圣诞村', type: '风景名胜', address: '', lng: 116.3, lat: 30.1 },
+        ]);
+      });
+      await service['enrichCoordinates'](plan, '漠河');
+      expect(geoMock.searchPoi).toHaveBeenCalledWith('圣诞村', '漠河');
+      expect(geoMock.searchPoi).toHaveBeenCalledWith('漠河圣诞村');
+      const spot = plan.days[0]!.items[0]!;
+      expect(spot.poiId).toBe('xms');
     });
 
     it('最近候选仍超过 60km 时放弃坐标(宁缺勿错)', async () => {

@@ -9,7 +9,10 @@ export interface AMapMapInstance {
   remove(overlays: unknown[]): void
   setFitView(overlays?: unknown[], immediately?: boolean, avoid?: number[]): void
   setCenter(center: [number, number]): void
+  /** 平滑移动视野到指定点(优于 setCenter 的瞬移) */
+  panTo?(center: [number, number]): void
   setZoom(zoom: number): void
+  getZoom?(): number
   destroy(): void
 }
 

@@ -24,6 +24,8 @@ interface MapViewProps {
   hoveredItemId: string | null
   /** 行程目的地天气预报(当天 + 未来 3 天);不传则天气浮层不显示数据 */
   weatherCasts?: WeatherCast[]
+  /** 点击左侧卡片要求聚焦的条目 id(变化时平滑移动视野过去) */
+  focusItemId?: string | null
 }
 
 type CoordItem = ItineraryItem & { lng: number; lat: number }
@@ -136,7 +138,7 @@ function MapPlaceholder({ day }: { day: TripDay | undefined }) {
   )
 }
 
-export function MapView({ day, destination, hoveredItemId, weatherCasts }: MapViewProps) {
+export function MapView({ day, destination, hoveredItemId, weatherCasts, focusItemId }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const amapRef = useRef<AMapNamespace | null>(null)
   const mapRef = useRef<AMapMapInstance | null>(null)
@@ -292,6 +294,18 @@ export function MapView({ day, destination, hoveredItemId, weatherCasts }: MapVi
       }
     }
   }, [hoveredItemId])
+
+  // 点击左侧卡片:平滑聚焦到对应 marker,视野太宽时顺带放大到街区尺度
+  useEffect(() => {
+    const map = mapRef.current
+    if (!mapReady || !map || !focusItemId) return
+    const target = coordItems.find((i) => i.id === focusItemId)
+    if (!target) return
+    if (map.panTo) map.panTo([target.lng, target.lat])
+    else map.setCenter([target.lng, target.lat])
+    if ((map.getZoom?.() ?? 11) < 13) map.setZoom(13)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusItemId, mapReady, coordKey])
 
   /**
    * 实时路况开关:只沿「我们的路线」渲染路况——

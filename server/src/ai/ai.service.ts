@@ -416,34 +416,76 @@ export class AiService {
 
   /**
    * 对每个 poiName 反查高德 POI 补经纬度。
-   * 防错位:每天以首个景点为锚点,每项从候选 POI 中选离锚点最近的一个;
-   * 最近候选仍超过 60km 则放弃坐标(宁缺勿错,避免餐厅被匹配到 80km 外)。
-   * 并发限制 2 + 失败重试一次,规避高德个人 Key 的 QPS 限制。
+   * 三层防错位(实测漠河等偏远目的地:高德城市限定搜不到会返回 2000km+ 外省重名):
+   * 1. 目的地半径:候选距目的地中心超 200km 一律视为外省重名,剔除;
+   * 2. 天锚点就近:每项从剩余候选中选离当天锚点最近的;
+   * 3. 类型化放弃:FOOD/HOTEL 最近候选仍超 60km 才放弃坐标(泛名餐饮宁缺勿错);
+   *    SPOT 不受 60km 限制——北极村距漠河市区 75km 是真实远景点,交给优化器排。
+   * 城市限定无结果时用「目的地+名称」重搜;并发 2 + 失败重试,规避 QPS 限制。
    */
   private async enrichCoordinates(plan: Plan, destination: string) {
+    let destCenter: { lng: number; lat: number } | null = null;
+    try {
+      destCenter = await this.geo.getCityCenter(destination);
+    } catch {
+      this.logger.warn(`目的地中心查询失败,仅靠锚点规则防错位: ${destination}`);
+    }
+
     for (const day of plan.days) {
       const targets = day.items.filter((it) => it.poiName);
       const candidates = new Map<
         PlanItem,
         { id: string; lng: number; lat: number; type: string }[]
       >();
+      const put = (
+        it: PlanItem,
+        pois: { id: string; lng: number; lat: number; type: string }[],
+      ) =>
+        candidates.set(
+          it,
+          pois.map((p) => ({ id: p.id, lng: p.lng, lat: p.lat, type: p.type })),
+        );
       await mapLimit(targets, 2, async (it) => {
-        for (let attempt = 0; attempt < 2; attempt++) {
+        for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            if (attempt > 0) await new Promise((r) => setTimeout(r, 500));
+            // QPS 限流是主要失败原因,退避 500ms/1000ms 再试
+            if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
             const pois = await this.geo.searchPoi(it.poiName!, destination);
-            candidates.set(
-              it,
-              pois.map((p) => ({ id: p.id, lng: p.lng, lat: p.lat, type: p.type })),
-            );
+            if (pois.length) {
+              put(it, pois);
+              return;
+            }
+            // 城市限定无结果:城市名并进关键词重搜(半径过滤兜底外省重名)
+            put(it, await this.geo.searchPoi(`${destination}${it.poiName!}`));
             return;
           } catch {
-            if (attempt === 1) {
-              this.logger.warn(`POI 查询失败: ${it.poiName}`);
+            if (attempt === 2) {
+              // 三次都异常:最后用合并关键词试一次
+              try {
+                put(it, await this.geo.searchPoi(`${destination}${it.poiName!}`));
+              } catch {
+                this.logger.warn(`POI 查询失败: ${it.poiName}`);
+              }
             }
           }
         }
       });
+
+      // 目的地半径过滤:剔除距中心 200km 外的外省重名候选
+      if (destCenter) {
+        const center = destCenter;
+        for (const [it, list] of candidates) {
+          const filtered = list.filter(
+            (c) => this.haversineKm(center, c) <= 200,
+          );
+          if (!filtered.length && list.length) {
+            this.logger.warn(
+              `POI 候选均不在目的地范围内(>200km),全部剔除: ${it.poiName}`,
+            );
+          }
+          candidates.set(it, filtered);
+        }
+      }
 
       // 天锚点:第一个有候选的 SPOT 的首选坐标
       const anchorItem = day.items.find(
@@ -464,7 +506,8 @@ export class AiService {
               best = c;
             }
           }
-          if (bestDist > 60) {
+          // 泛名餐饮/住宿离当天区域 60km 必然是错配;SPOT 允许真实远距离
+          if (bestDist > 60 && it.type !== 'SPOT') {
             this.logger.warn(
               `POI 偏离当天区域(${Math.round(bestDist)}km),放弃坐标: ${it.poiName}`,
             );

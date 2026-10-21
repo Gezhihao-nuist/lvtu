@@ -185,6 +185,26 @@ export class GeoService {
     return detail;
   }
 
+  /** 行政区查询:目的地中心坐标(过滤外省重名 POI 用);查不到返回 null */
+  async getCityCenter(city: string): Promise<{ lng: number; lat: number } | null> {
+    const key = this.amapKey();
+    const cacheKey = `district:${city}`;
+    const cached = this.getCached<{ lng: number; lat: number } | null>(cacheKey);
+    if (cached) return cached;
+    const url =
+      `https://restapi.amap.com/v3/config/district?key=${key}` +
+      `&keywords=${encodeURIComponent(city)}&subdistrict=0`;
+    const data = await this.fetchJson(url);
+    const center = String(
+      ((data.districts ?? []) as Record<string, unknown>[])[0]?.center ?? '',
+    );
+    const [lng, lat] = center.split(',').map(Number);
+    const result =
+      Number.isFinite(lng) && Number.isFinite(lat) ? { lng, lat } : null;
+    this.setCached(cacheKey, result);
+    return result;
+  }
+
   /** 高德路径规划,返回首条方案的距离/时长/ polyline */
   async route(from: string, to: string, mode: RouteMode): Promise<GeoRoute> {
     const key = this.amapKey();

@@ -73,6 +73,7 @@ export default function TripEditorPage() {
   const { id = '' } = useParams()
   const [activeDayIndex, setActiveDayIndex] = useState(0)
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null)
+  const [focusItemId, setFocusItemId] = useState<string | null>(null)
   const [aiOpen, setAiOpen] = useState(false)
 
   const tripQuery = useQuery({
@@ -157,12 +158,12 @@ export default function TripEditorPage() {
           <DayTabs days={days} activeIndex={activeDay?.dayIndex ?? 0} onSelect={setActiveDayIndex} weatherByDate={weatherByDate} />
           <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50/60">
             {activeDay && (
-              <Timeline trip={trip} day={activeDay} onHoverItem={setHoveredItemId} />
+              <Timeline trip={trip} day={activeDay} onHoverItem={setHoveredItemId} onLocate={setFocusItemId} />
             )}
           </div>
         </aside>
         <section className="min-w-0 flex-1">
-          <MapView day={activeDay} destination={trip.destination} hoveredItemId={hoveredItemId} weatherCasts={weatherQuery.data?.casts} />
+          <MapView day={activeDay} destination={trip.destination} hoveredItemId={hoveredItemId} weatherCasts={weatherQuery.data?.casts} focusItemId={focusItemId} />
         </section>
       </div>
 

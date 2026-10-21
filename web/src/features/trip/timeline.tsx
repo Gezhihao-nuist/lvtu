@@ -45,6 +45,8 @@ interface TimelineProps {
   trip: TripDetail
   day: TripDay
   onHoverItem: (id: string | null) => void
+  /** 点击有坐标的卡片:请求地图聚焦到该条目 */
+  onLocate: (id: string) => void
 }
 
 function timeRange(item: ItineraryItem): string | null {
@@ -57,11 +59,13 @@ function SortableItemCard({
   onEdit,
   onDelete,
   onHover,
+  onLocate,
 }: {
   item: ItineraryItem
   onEdit: () => void
   onDelete: () => void
   onHover: (id: string | null) => void
+  onLocate: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
@@ -84,10 +88,19 @@ function SortableItemCard({
       <div
         role="button"
         tabIndex={0}
-        onClick={onEdit}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') onEdit()
+        onClick={() => {
+          // 有坐标:点击卡片让地图聚焦过去(编辑走右上角菜单);
+          // 无坐标:保持原有行为,点击打开编辑框
+          if (item.lng != null && item.lat != null) onLocate()
+          else onEdit()
         }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            if (item.lng != null && item.lat != null) onLocate()
+            else onEdit()
+          }
+        }}
+        aria-label={item.lng != null ? `在地图上定位${item.title}` : `编辑${item.title}`}
         className="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-zinc-200/70 bg-white p-3.5 shadow-card transition-shadow hover:shadow-float"
       >
         <button
@@ -295,7 +308,7 @@ function EditItemDialog({
   )
 }
 
-export function Timeline({ trip, day, onHoverItem }: TimelineProps) {
+export function Timeline({ trip, day, onHoverItem, onLocate }: TimelineProps) {
   const queryClient = useQueryClient()
   const queryKey = ['trip', trip.id]
   const [editing, setEditing] = useState<ItineraryItem | null>(null)
@@ -376,6 +389,7 @@ export function Timeline({ trip, day, onHoverItem }: TimelineProps) {
                   onEdit={() => setEditing(item)}
                   onDelete={() => remove.mutate(item.id)}
                   onHover={onHoverItem}
+                  onLocate={() => onLocate(item.id)}
                 />
               ))}
             </motion.div>

@@ -193,6 +193,34 @@ describe('GeoService', () => {
     });
   });
 
+  describe('getCityCenter 目的地中心', () => {
+    it('解析行政区中心坐标;同城市调两次 fetch 只调 1 次', async () => {
+      fetchMock.mockResolvedValue(
+        okFetch({
+          status: '1',
+          districts: [{ name: '漠河市', adcode: '232701', center: '122.538,52.972' }],
+        }),
+      );
+      const first = await service.getCityCenter('漠河');
+      const second = await service.getCityCenter('漠河');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(first).toEqual({ lng: 122.538, lat: 52.972 });
+      expect(second).toEqual(first);
+    });
+
+    it('查不到行政区:返回 null', async () => {
+      fetchMock.mockResolvedValue(okFetch({ status: '1', districts: [] }));
+      await expect(service.getCityCenter('火星')).resolves.toBeNull();
+    });
+
+    it('center 字段非法:返回 null 而不抛错', async () => {
+      fetchMock.mockResolvedValue(
+        okFetch({ status: '1', districts: [{ name: 'x', center: '' }] }),
+      );
+      await expect(service.getCityCenter('某处')).resolves.toBeNull();
+    });
+  });
+
   describe('routes 批量', () => {
     const near = { lng: 120.0, lat: 30.0 };
     const mid = { lng: 120.01, lat: 30.0 }; // 距 near 约 1km
