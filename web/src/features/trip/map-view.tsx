@@ -6,11 +6,11 @@ import {
   geocodeCity,
   isAmapAvailable,
   loadAmap,
+  type AMapDriving,
   type AMapMapInstance,
   type AMapMarker,
   type AMapNamespace,
   type AMapPolyline,
-  type AMapTileLayer,
 } from '../../lib/amap'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/utils'
@@ -142,7 +142,7 @@ export function MapView({ day, destination, hoveredItemId, weatherCasts }: MapVi
   const mapRef = useRef<AMapMapInstance | null>(null)
   const markersRef = useRef<Array<{ id: string; item: CoordItem; index: number; marker: AMapMarker }>>([])
   const polylinesRef = useRef<AMapPolyline[]>([])
-  const trafficLayerRef = useRef<AMapTileLayer | null>(null)
+  const drivingRef = useRef<AMapDriving | null>(null)
   const routeGenRef = useRef(0)
   const routeCacheRef = useRef(new Map<string, [number, number][][]>())
   const [mapReady, setMapReady] = useState(false)
@@ -293,22 +293,46 @@ export function MapView({ day, destination, hoveredItemId, weatherCasts }: MapVi
     }
   }, [hoveredItemId])
 
-  // 实时路况图层开关(高德官方图层,与高德 App 同款;autoRefresh 自动刷新)
+  /**
+   * 实时路况开关:只沿「我们的路线」渲染路况——
+   * Driving 插件 showTraffic 会把路径本身按实时路况染成绿/黄/红,
+   * 作为底层实色衬底;我们的青色虚线路径压在上层,两者一眼区分。
+   * 不缓存:路况是实时数据,每次开启都重新查询;关闭/切天时 clear 移除。
+   */
   useEffect(() => {
     const AMap = amapRef.current
     const map = mapRef.current
     if (!mapReady || !AMap || !map) return
-    if (showTraffic && !trafficLayerRef.current) {
-      try {
-        trafficLayerRef.current = AMap.TileLayer
-          ? new AMap.TileLayer.Traffic({ zIndex: 10, autoRefresh: true })
-          : null
-      } catch {
-        trafficLayerRef.current = null
-      }
+    if (!showTraffic || coordItems.length < 2) {
+      drivingRef.current?.clear()
+      return
     }
-    trafficLayerRef.current?.setMap(showTraffic ? map : null)
-  }, [showTraffic, mapReady])
+    AMap.plugin('AMap.Driving', () => {
+      const Driving = amapRef.current?.Driving
+      const currentMap = mapRef.current
+      if (!Driving || !currentMap) return
+      if (!drivingRef.current) {
+        drivingRef.current = new Driving({
+          map: currentMap,
+          showTraffic: true, // 路径按实时路况着色
+          hideMarkers: true, // 不画插件默认的起终点标记(我们有自己的 marker)
+          autoFitView: false, // 不抢镜头,视野由我们的 setFitView 管
+        })
+      }
+      const driving = drivingRef.current
+      driving.clear() // 清掉上一天/上一次渲染的交通路径
+      driving.search(
+        coordItems.map((i) => ({ lng: i.lng, lat: i.lat })),
+        () => {
+          // status 非 complete 时插件不渲染,我们的虚线路径仍在,静默降级
+        },
+      )
+    })
+    return () => {
+      drivingRef.current?.clear()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTraffic, mapReady, coordKey])
 
   if (!isAmapAvailable) return <MapPlaceholder day={day} />
 

@@ -31,6 +31,24 @@ export interface AMapTileLayer {
   hide?(): void
 }
 
+/** 驾车路径规划插件结果(只需少量字段) */
+export interface AMapDrivingResult {
+  info?: string
+  routes?: unknown[]
+}
+
+/**
+ * 驾车路径规划插件(JS API 2.0 用 search(),不是旧版的 route())。
+ * 构造时传 showTraffic: true 会把渲染的路径按实时路况着色(绿/黄/红)。
+ */
+export interface AMapDriving {
+  search(
+    points: Array<{ lng: number; lat: number }>,
+    cb: (status: string, result: AMapDrivingResult) => void,
+  ): void
+  clear(): void
+}
+
 export interface GeocoderResult {
   info?: string
   geocodes?: Array<{ location?: { lng: number; lat: number } | string }>
@@ -48,6 +66,7 @@ export interface AMapNamespace {
     /** 官方实时路况图层(核心类,无需插件) */
     Traffic: new (opts?: Record<string, unknown>) => AMapTileLayer
   }
+  Driving?: new (opts?: Record<string, unknown>) => AMapDriving
   Geocoder?: new (opts?: Record<string, unknown>) => AMapGeocoder
   plugin(name: string | string[], cb: () => void): void
 }
