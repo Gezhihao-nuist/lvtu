@@ -193,6 +193,71 @@ describe('GeoService', () => {
     });
   });
 
+  describe('getTips 输入提示', () => {
+    const amapTipsResponse = {
+      status: '1',
+      tips: [
+        {
+          id: 'B000A7O1CU',
+          name: '颐和园',
+          district: '北京市海淀区',
+          address: '新建宫门路19号',
+          location: '116.275,39.999',
+          typecode: '110201',
+        },
+        {
+          id: 'X2',
+          name: '北京',
+          district: '北京市',
+          address: [],
+          location: [], // 城市类提示无坐标,应剔除
+          typecode: '010000',
+        },
+      ],
+    };
+
+    it('解析 + typecode 映射类目;无坐标剔除;同参数缓存命中', async () => {
+      fetchMock.mockResolvedValue(okFetch(amapTipsResponse));
+      const first = await service.getTips('颐', '北京');
+      const second = await service.getTips('颐', '北京');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(first).toHaveLength(1);
+      expect(first[0]).toMatchObject({
+        name: '颐和园',
+        district: '北京市海淀区',
+        type: '风景名胜',
+        lng: 116.275,
+      });
+      expect(second).toEqual(first);
+    });
+
+    it('typecode 餐饮/住宿/交通/未知前缀映射正确', async () => {
+      fetchMock.mockResolvedValue(
+        okFetch({
+          status: '1',
+          tips: [
+            { id: 'a', name: 'a', district: '', address: '', location: '1,1', typecode: '050100' },
+            { id: 'b', name: 'b', district: '', address: '', location: '1,1', typecode: '100200' },
+            { id: 'c', name: 'c', district: '', address: '', location: '1,1', typecode: '150500' },
+            { id: 'd', name: 'd', district: '', address: '', location: '1,1', typecode: '990000' },
+          ],
+        }),
+      );
+      const tips = await service.getTips('x');
+      expect(tips.map((t) => t.type)).toEqual([
+        '餐饮服务',
+        '住宿服务',
+        '交通设施',
+        '地点',
+      ]);
+    });
+
+    it('空结果:返回空数组', async () => {
+      fetchMock.mockResolvedValue(okFetch({ status: '1', tips: [] }));
+      await expect(service.getTips('不存在')).resolves.toEqual([]);
+    });
+  });
+
   describe('getCityCenter 目的地中心', () => {
     it('解析行政区中心坐标;同城市调两次 fetch 只调 1 次', async () => {
       fetchMock.mockResolvedValue(

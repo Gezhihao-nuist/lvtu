@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, LoaderCircle, MapPin, Plus, Search } from 'lucide-react'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/utils'
-import type { Poi } from '../../types'
+import type { PoiTip } from '../../types'
 import { guessTypeFromPoi } from './item-meta'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { Button } from '../../components/ui/button'
@@ -39,10 +39,10 @@ export function AddItemButton({ tripId, dayId, destination }: AddItemButtonProps
   }, [keyword])
 
   const poiQuery = useQuery({
-    queryKey: ['poi', destination, debounced],
+    queryKey: ['tips', destination, debounced],
     queryFn: () =>
-      api<{ pois: Poi[] }>(
-        `/geo/poi?keyword=${encodeURIComponent(debounced)}&city=${encodeURIComponent(destination)}`,
+      api<{ tips: PoiTip[] }>(
+        `/geo/tips?keyword=${encodeURIComponent(debounced)}&city=${encodeURIComponent(destination)}`,
       ),
     enabled: open && tab === 'search' && debounced.length > 0,
     retry: false,
@@ -62,7 +62,7 @@ export function AddItemButton({ tripId, dayId, destination }: AddItemButtonProps
     onError: () => toast.error('添加失败,请稍后再试'),
   })
 
-  const pickPoi = (poi: Poi) => {
+  const pickPoi = (poi: PoiTip) => {
     addItem.mutate({
       title: poi.name,
       type: guessTypeFromPoi(poi.type),
@@ -147,11 +147,11 @@ export function AddItemButton({ tripId, dayId, destination }: AddItemButtonProps
                   <LoaderCircle className="size-4 animate-spin" />
                   搜索中…
                 </p>
-              ) : debounced && poiQuery.data && poiQuery.data.pois.length === 0 ? (
+              ) : debounced && poiQuery.data && poiQuery.data.tips.length === 0 ? (
                 <p className="py-6 text-center text-sm text-zinc-500">没有找到相关地点</p>
               ) : poiQuery.data ? (
                 <ul className="space-y-0.5">
-                  {poiQuery.data.pois.map((poi) => (
+                  {poiQuery.data.tips.map((poi) => (
                     <li key={poi.id}>
                       <button
                         type="button"
@@ -164,7 +164,9 @@ export function AddItemButton({ tripId, dayId, destination }: AddItemButtonProps
                           <span className="block truncate text-sm font-medium text-zinc-900">
                             {poi.name}
                           </span>
-                          <span className="block truncate text-xs text-zinc-500">{poi.address}</span>
+                          <span className="block truncate text-xs text-zinc-500">
+                            {[poi.district, poi.address].filter(Boolean).join(' · ')}
+                          </span>
                         </span>
                       </button>
                     </li>

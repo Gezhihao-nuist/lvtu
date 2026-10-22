@@ -68,6 +68,23 @@ export interface Poi {
   lat: number
 }
 
+/** 高德输入提示(inputtips):比 Poi 多行政区信息 */
+export interface PoiTip extends Poi {
+  district: string
+}
+
+/** 行程预算汇总(GET /trips/:id/budget) */
+export interface BudgetSummary {
+  budgetTotal: number | null
+  plannedTotal: number
+  byType: Record<ItemType, number>
+  byDay: { dayIndex: number; date: string; total: number }[]
+  itemCount: number
+  costedItemCount: number
+  memberCount: number
+  perPerson: number
+}
+
 /** 高德单日天气预报(仅覆盖当天 + 未来 3 天) */
 export interface WeatherCast {
   date: string

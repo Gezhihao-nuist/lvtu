@@ -151,6 +151,54 @@ export class TripService {
     await this.prisma.trip.delete({ where: { id } });
   }
 
+  /**
+   * 预算汇总:按类型/按天聚合条目预计花费,计算人均。
+   * 成员数 = 协作者记录数(owner 也在 collaborators 表里,无需 +1)。
+   */
+  async budget(id: string) {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id },
+      include: {
+        days: { orderBy: { dayIndex: 'asc' }, include: { items: true } },
+        _count: { select: { collaborators: true } },
+      },
+    });
+    if (!trip) throw new NotFoundException('行程不存在');
+
+    const byType: Record<string, number> = {
+      SPOT: 0,
+      FOOD: 0,
+      HOTEL: 0,
+      TRANSPORT: 0,
+    };
+    let costedItemCount = 0;
+    const byDay = trip.days.map((d) => {
+      let total = 0;
+      for (const it of d.items) {
+        const c = toNum(it.cost);
+        if (c !== null) {
+          total += c;
+          byType[it.type] = (byType[it.type] ?? 0) + c;
+          costedItemCount++;
+        }
+      }
+      return { dayIndex: d.dayIndex, date: dateKey(d.date), total };
+    });
+    const plannedTotal = byDay.reduce((s, d) => s + d.total, 0);
+    const itemCount = trip.days.reduce((s, d) => s + d.items.length, 0);
+    const memberCount = Math.max(trip._count.collaborators, 1);
+    return {
+      budgetTotal: toNum(trip.budgetTotal),
+      plannedTotal,
+      byType,
+      byDay,
+      itemCount,
+      costedItemCount,
+      memberCount,
+      perPerson: plannedTotal / memberCount,
+    };
+  }
+
   /** 深拷贝行程 + days + items 为当前用户的新行程 */
   async copy(sourceId: string, userId: string) {
     const src = await this.prisma.trip.findUnique({

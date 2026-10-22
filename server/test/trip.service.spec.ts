@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../src/prisma/prisma.service.js';
 import { TripService } from '../src/trip/trip.service.js';
@@ -265,6 +265,74 @@ describe('TripService', () => {
         '2026-11-04',
       );
       expect(createArg.data[0]?.dayIndex).toBe(2);
+    });
+  });
+
+  describe('budget(预算汇总)', () => {
+    const item = (type: string, cost: number | null) => ({ type, cost });
+    const tripRow = (days: unknown[], collaborators = 1) => ({
+      id: 't1',
+      budgetTotal: 3000,
+      days,
+      _count: { collaborators },
+    });
+
+    it('按类型/按天聚合;人均=总花费/成员数(owner 已在协作者表,不重复计)', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue(
+        tripRow(
+          [
+            {
+              dayIndex: 0,
+              date: new Date('2026-11-01T00:00:00.000Z'),
+              items: [item('SPOT', 60), item('FOOD', 80), item('FOOD', 100)],
+            },
+            {
+              dayIndex: 1,
+              date: new Date('2026-11-02T00:00:00.000Z'),
+              items: [item('HOTEL', 300), item('TRANSPORT', 40)],
+            },
+          ],
+          2,
+        ),
+      );
+      const b = await service.budget('t1');
+      expect(b.budgetTotal).toBe(3000);
+      expect(b.plannedTotal).toBe(580);
+      expect(b.byType).toEqual({
+        SPOT: 60,
+        FOOD: 180,
+        HOTEL: 300,
+        TRANSPORT: 40,
+      });
+      expect(b.byDay.map((d) => d.total)).toEqual([240, 340]);
+      expect(b.memberCount).toBe(2);
+      expect(b.perPerson).toBe(290);
+      expect(b.itemCount).toBe(5);
+      expect(b.costedItemCount).toBe(5);
+    });
+
+    it('无花费条目不参与汇总,costedItemCount 只计有价项', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue(
+        tripRow([
+          {
+            dayIndex: 0,
+            date: new Date('2026-11-01T00:00:00.000Z'),
+            items: [item('SPOT', null), item('FOOD', 50)],
+          },
+        ]),
+      );
+      const b = await service.budget('t1');
+      expect(b.plannedTotal).toBe(50);
+      expect(b.itemCount).toBe(2);
+      expect(b.costedItemCount).toBe(1);
+      expect(b.byType.SPOT).toBe(0);
+    });
+
+    it('行程不存在:NotFoundException', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue(null);
+      await expect(service.budget('tX')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 });

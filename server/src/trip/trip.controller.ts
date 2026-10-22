@@ -38,6 +38,12 @@ export class TripController {
     return this.trip.detail(id);
   }
 
+  @Get(':id/budget')
+  @UseGuards(TripAccessGuard)
+  budget(@Param('id') id: string) {
+    return this.trip.budget(id);
+  }
+
   @Patch(':id')
   @UseGuards(TripAccessGuard)
   @TripRoles('OWNER', 'EDITOR')

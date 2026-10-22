@@ -19,6 +19,12 @@ export class GeoController {
     return { pois };
   }
 
+  @Get('tips')
+  async tips(@Query() query: PoiQueryDto) {
+    const tips = await this.geo.getTips(query.keyword, query.city);
+    return { tips };
+  }
+
   @Get('weather')
   async weather(@Query() query: WeatherQueryDto) {
     const casts = await this.geo.getWeather(query.city);

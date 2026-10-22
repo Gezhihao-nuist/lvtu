@@ -45,6 +45,18 @@ export interface WeatherCast {
   nightTemp: number;
 }
 
+/** 高德输入提示(inputtips 联想结果) */
+export interface GeoTip {
+  id: string;
+  name: string;
+  district: string;
+  address: string;
+  /** 由 typecode 前缀映射的粗粒度中文类目(供前端类型猜测) */
+  type: string;
+  lng: number;
+  lat: number;
+}
+
 /** 高德 POI 详情(评分/电话/细分类目) */
 export interface PoiDetail {
   id: string;
@@ -73,6 +85,26 @@ function haversineMeters(
     Math.sin(dLat / 2) ** 2 +
     Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
   return 2 * 6371000 * Math.asin(Math.sqrt(s));
+}
+
+/** inputtips typecode 数字码 → 粗粒度中文类目(前两位为大类) */
+const TYPECODE_LABELS: [RegExp, string][] = [
+  [/^05/, '餐饮服务'],
+  [/^10/, '住宿服务'],
+  [/^15/, '交通设施'],
+  [/^11/, '风景名胜'],
+  [/^06/, '购物服务'],
+  [/^07/, '生活服务'],
+  [/^08/, '体育休闲服务'],
+  [/^09/, '医疗保健服务'],
+  [/^14/, '科教文化服务'],
+];
+
+function labelFromTypecode(typecode: string): string {
+  for (const [re, label] of TYPECODE_LABELS) {
+    if (re.test(typecode)) return label;
+  }
+  return '地点';
 }
 
 /** 带下标的并发限制 map,规避高德个人 Key 的 QPS 限制 */
@@ -155,6 +187,41 @@ export class GeoService {
       .filter((c) => c.date);
     this.setCached(cacheKey, casts);
     return casts;
+  }
+
+  /**
+   * 高德输入提示:边输边联想,比 place/text 轻量快速。
+   * inputtips 的 typecode 是数字码,按前缀映射成粗粒度中文类目,
+   * 保持与 place/text 的 type 字段同一形态;无坐标的提示(城市/区名)剔除。
+   */
+  async getTips(keyword: string, city?: string): Promise<GeoTip[]> {
+    const key = this.amapKey();
+    const cacheKey = `tips:${city ?? ''}:${keyword}`;
+    const cached = this.getCached<GeoTip[]>(cacheKey);
+    if (cached) return cached;
+    const url =
+      `https://restapi.amap.com/v3/assistant/inputtips?key=${key}` +
+      `&keywords=${encodeURIComponent(keyword)}` +
+      (city ? `&city=${encodeURIComponent(city)}` : '');
+    const data = await this.fetchJson(url);
+    const tips: GeoTip[] = ((data.tips ?? []) as Record<string, unknown>[])
+      .map((t) => {
+        const [lng, lat] = String(t.location ?? '')
+          .split(',')
+          .map(Number);
+        return {
+          id: String(t.id ?? ''),
+          name: String(t.name ?? ''),
+          district: typeof t.district === 'string' ? t.district : '',
+          address: typeof t.address === 'string' ? t.address : '',
+          type: labelFromTypecode(String(t.typecode ?? '')),
+          lng,
+          lat,
+        };
+      })
+      .filter((t) => t.id && Number.isFinite(t.lng) && Number.isFinite(t.lat));
+    this.setCached(cacheKey, tips);
+    return tips;
   }
 
   /** 高德 POI 详情:评分在 biz_ext 里,无数据时高德给空串/空数组,统一归一为 null */

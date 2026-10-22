@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, CircleAlert, Pencil, Sparkles } from 'lucide-react'
+import { ArrowLeft, CircleAlert, Pencil, Sparkles, Wallet } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange } from '../../lib/format'
 import type { TripDetail, WeatherCast } from '../../types'
@@ -13,6 +13,7 @@ import { DayTabs } from './day-tabs'
 import { Timeline } from './timeline'
 import { AiPanel } from './ai-panel'
 import { MapView } from './map-view'
+import { BudgetDialog } from './budget-dialog'
 
 function InlineTitle({ tripId, value }: { tripId: string; value: string }) {
   const queryClient = useQueryClient()
@@ -75,6 +76,7 @@ export default function TripEditorPage() {
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null)
   const [focusItemId, setFocusItemId] = useState<string | null>(null)
   const [aiOpen, setAiOpen] = useState(false)
+  const [budgetOpen, setBudgetOpen] = useState(false)
 
   const tripQuery = useQuery({
     queryKey: ['trip', id],
@@ -144,7 +146,11 @@ export default function TripEditorPage() {
         <span className="tnum hidden shrink-0 text-sm text-zinc-500 md:block">
           {formatDateRange(trip.startDate, trip.endDate)}
         </span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setBudgetOpen(true)}>
+            <Wallet />
+            预算
+          </Button>
           <Button size="sm" onClick={() => setAiOpen(true)}>
             <Sparkles />
             AI 规划
@@ -168,6 +174,7 @@ export default function TripEditorPage() {
       </div>
 
       <AiPanel open={aiOpen} onClose={() => setAiOpen(false)} trip={trip} />
+      <BudgetDialog open={budgetOpen} onClose={() => setBudgetOpen(false)} trip={trip} />
     </div>
   )
 }
