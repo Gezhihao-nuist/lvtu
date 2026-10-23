@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, CircleAlert, HeartPulse, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
+import { ArrowLeft, CircleAlert, ClipboardList, HeartPulse, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange } from '../../lib/format'
 import type { TripDetail, WeatherCast } from '../../types'
@@ -14,6 +14,7 @@ import { Timeline } from './timeline'
 import { AiPanel } from './ai-panel'
 import { MapView } from './map-view'
 import { BudgetDialog } from './budget-dialog'
+import { ChecklistDialog } from './checklist-dialog'
 import { HealthDialog } from './health-dialog'
 import { ShareDialog } from './share-dialog'
 
@@ -81,6 +82,7 @@ export default function TripEditorPage() {
   const [budgetOpen, setBudgetOpen] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [healthOpen, setHealthOpen] = useState(false)
+  const [checklistOpen, setChecklistOpen] = useState(false)
 
   const tripQuery = useQuery({
     queryKey: ['trip', id],
@@ -150,20 +152,20 @@ export default function TripEditorPage() {
         <span className="tnum hidden shrink-0 text-sm text-zinc-500 md:block">
           {formatDateRange(trip.startDate, trip.endDate)}
         </span>
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => setShareOpen(true)}>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button size="icon" variant="outline" title="分享行程" onClick={() => setShareOpen(true)}>
             <Share2 />
-            分享
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setBudgetOpen(true)}>
+          <Button size="icon" variant="outline" title="预算与花费" onClick={() => setBudgetOpen(true)}>
             <Wallet />
-            预算
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setHealthOpen(true)}>
+          <Button size="icon" variant="outline" title="行程体检" onClick={() => setHealthOpen(true)}>
             <HeartPulse />
-            体检
           </Button>
-          <Button size="sm" onClick={() => setAiOpen(true)}>
+          <Button size="icon" variant="outline" title="行前清单" onClick={() => setChecklistOpen(true)}>
+            <ClipboardList />
+          </Button>
+          <Button size="sm" className="ml-1" onClick={() => setAiOpen(true)}>
             <Sparkles />
             AI 规划
           </Button>
@@ -189,6 +191,7 @@ export default function TripEditorPage() {
       <BudgetDialog open={budgetOpen} onClose={() => setBudgetOpen(false)} trip={trip} />
       <ShareDialog open={shareOpen} onClose={() => setShareOpen(false)} trip={trip} />
       <HealthDialog open={healthOpen} onClose={() => setHealthOpen(false)} trip={trip} />
+      <ChecklistDialog open={checklistOpen} onClose={() => setChecklistOpen(false)} trip={trip} />
     </div>
   )
 }
