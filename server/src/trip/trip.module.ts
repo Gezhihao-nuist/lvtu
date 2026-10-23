@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 import { TripAccessGuard } from './guards/trip-access.guard.js';
+import { ShareController } from './share.controller.js';
 import { TripDayController } from './trip-day.controller.js';
 import { TripItemController } from './trip-item.controller.js';
 import { TripController } from './trip.controller.js';
 import { TripService } from './trip.service.js';
 
 @Module({
-  controllers: [TripController, TripDayController, TripItemController],
+  controllers: [TripController, TripDayController, TripItemController, ShareController],
   providers: [TripService, TripAccessGuard],
   exports: [TripAccessGuard],
 })

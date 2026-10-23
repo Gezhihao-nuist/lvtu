@@ -1,9 +1,10 @@
-import { ItemType } from '@prisma/client';
+import { ItemType, Visibility } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -66,6 +67,11 @@ export class UpdateTripDto {
   @IsOptional()
   @IsString()
   coverUrl?: string;
+
+  /** 分享开关:PRIVATE 仅成员可见;LINK 知道链接的人可读(免登录) */
+  @IsOptional()
+  @IsIn(['PRIVATE', 'LINK'])
+  visibility?: Visibility;
 }
 
 export class UpdateDayDto {

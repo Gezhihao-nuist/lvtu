@@ -8,6 +8,7 @@ import LoginPage from './features/auth/login-page'
 import RegisterPage from './features/auth/register-page'
 import TripsPage from './features/trips/trips-page'
 import TripEditorPage from './features/trip/trip-editor-page'
+import SharePage from './features/share/share-page'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const status = useAuthStore((s) => s.status)
@@ -47,6 +48,8 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        {/* 免登录分享只读页 */}
+        <Route path="/share/:id" element={<SharePage />} />
         <Route
           path="/trips"
           element={

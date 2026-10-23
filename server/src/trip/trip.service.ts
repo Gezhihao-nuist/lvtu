@@ -98,6 +98,23 @@ export class TripService {
     return this.detail(trip.id);
   }
 
+  /** 公开只读详情:仅 visibility=LINK 的行程可通过分享链接访问(免登录) */
+  async publicDetail(id: string) {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id },
+      include: {
+        days: {
+          orderBy: { dayIndex: 'asc' },
+          include: { items: { orderBy: { orderIndex: 'asc' } } },
+        },
+      },
+    });
+    if (!trip || trip.visibility !== 'LINK') {
+      throw new NotFoundException('分享链接无效或未开启分享');
+    }
+    return this.serializeTrip(trip);
+  }
+
   /** 行程详情:days 按 dayIndex 升序,items 按 orderIndex 升序 */
   async detail(id: string) {
     const trip = await this.prisma.trip.findUnique({
@@ -138,6 +155,7 @@ export class TripService {
           destination: dto.destination,
           budgetTotal: dto.budgetTotal,
           coverUrl: dto.coverUrl,
+          visibility: dto.visibility,
           ...(dates ? { startDate: dates[0], endDate: dates[dates.length - 1] } : {}),
         },
       });

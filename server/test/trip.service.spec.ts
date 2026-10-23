@@ -335,4 +335,36 @@ describe('TripService', () => {
       );
     });
   });
+
+  describe('publicDetail(公开分享只读)', () => {
+    it('visibility=LINK:返回行程详情', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue({
+        id: 't1',
+        title: '漠河之旅',
+        visibility: 'LINK',
+        budgetTotal: null,
+        days: [],
+      });
+      const result = await service.publicDetail('t1');
+      expect(result.title).toBe('漠河之旅');
+    });
+
+    it('visibility=PRIVATE:NotFoundException(分享已关闭)', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue({
+        id: 't1',
+        visibility: 'PRIVATE',
+        days: [],
+      });
+      await expect(service.publicDetail('t1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('行程不存在:NotFoundException', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue(null);
+      await expect(service.publicDetail('tX')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+  });
 });
