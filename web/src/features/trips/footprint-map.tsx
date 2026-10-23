@@ -153,7 +153,7 @@ export function FootprintMap({ destinations, activeCity, onSelectCity }: Footpri
           {destinations.length} 个城市 · 点击城市可筛选
         </p>
       </div>
-      <div ref={containerRef} className="mt-2 h-56 w-full" aria-label="足迹地图" role="img" />
+      <div ref={containerRef} className="mt-2 h-72 w-full md:h-96" aria-label="足迹地图" role="img" />
     </div>
   )
 }
