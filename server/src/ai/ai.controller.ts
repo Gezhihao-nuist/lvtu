@@ -61,6 +61,16 @@ export class AiController {
     );
   }
 
+  /** 为单独一天生成安排(空天/临时加的天);TripAccessGuard 按 dayId 定位行程 */
+  @Post('days/:dayId/generate')
+  @UseGuards(JwtAuthGuard, TripAccessGuard)
+  @TripRoles('OWNER', 'EDITOR')
+  async generateDay(@Param('dayId') dayId: string, @Res() res: Response) {
+    await this.runSse(res, (emit, signal) =>
+      this.ai.generateDay(dayId, emit, signal),
+    );
+  }
+
   /** 抓取攻略 URL 正文(尽力而为;反爬站点会失败,前端应允许用户改用手动粘贴) */
   @Post('fetch-url')
   @UseGuards(JwtAuthGuard)

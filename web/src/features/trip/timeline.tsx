@@ -23,6 +23,7 @@ import { formatMoney } from '../../lib/format'
 import type { ItineraryItem, TripDay, TripDetail } from '../../types'
 import { ITEM_TYPE_META } from './item-meta'
 import { AddItemButton } from './add-item-button'
+import { DayAiGenerate } from './day-ai-generate'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Textarea } from '../../components/ui/textarea'
@@ -370,9 +371,13 @@ export function Timeline({ trip, day, onHoverItem, onLocate }: TimelineProps) {
   return (
     <div className="px-4 py-4">
       {items.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-zinc-200 px-4 py-10 text-center">
-          <p className="text-sm text-zinc-500">这一天还没有安排</p>
-          <p className="mt-1 text-xs text-zinc-400">搜一个想去的地方,或用 AI 一键生成</p>
+        <div className="rounded-2xl border border-dashed border-zinc-200 px-4 py-8">
+          <p className="text-center text-sm text-zinc-500">这一天还没有安排</p>
+          <p className="mt-1 text-center text-xs text-zinc-400">让 AI 接着行程规划这一天,或者自己添加</p>
+          <div className="mx-auto mt-4 max-w-56 space-y-2.5">
+            <DayAiGenerate tripId={trip.id} dayId={day.id} dayIndex={day.dayIndex} />
+            <AddItemButton tripId={trip.id} dayId={day.id} destination={trip.destination} />
+          </div>
         </div>
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -393,7 +398,10 @@ export function Timeline({ trip, day, onHoverItem, onLocate }: TimelineProps) {
         </DndContext>
       )}
 
-      <AddItemButton tripId={trip.id} dayId={day.id} destination={trip.destination} />
+      {/* 空天的手动入口已内嵌在空态卡片里,这里只在有安排时渲染 */}
+      {items.length > 0 && (
+        <AddItemButton tripId={trip.id} dayId={day.id} destination={trip.destination} />
+      )}
 
       <EditItemDialog tripId={trip.id} item={editing} onClose={() => setEditing(null)} />
     </div>

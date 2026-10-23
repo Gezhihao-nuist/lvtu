@@ -31,6 +31,10 @@ const IMPORT_PROMPT = `你是旅行攻略整理师。用户会粘贴一篇旅行
 输出 schema:{"days":[{"dayIndex":0,"items":[{"type":"SPOT"|"FOOD"|"HOTEL"|"TRANSPORT","title":string,"poiName":string|null,"startTime":"HH:mm"|null,"endTime":"HH:mm"|null,"cost":number|null,"note":string|null}]}]}
 要求:严格依据攻略文本提炼,提到什么排什么,不要虚构攻略里不存在的景点;攻略没提的天数可结合目的地常识补足,使每天都有 3-6 项;**地理位置就近原则:同一天的地点尽量集中在同一区域,按游览顺序就近排列**;poiName 尽量使用高德地图能搜到的正式地名;攻略中的排队/时段/避坑提示提炼进 note,用一两句口语化中文,不要 AI 腔;绝不输出经纬度;dayIndex 从 0 开始;只输出 JSON,不要输出任何解释。`;
 
+const DAY_PROMPT = `你是专业旅行规划师。为用户行程中的单独一天生成安排(比如临时多加的一天),输出 JSON。
+输出 schema:{"days":[{"dayIndex":0,"items":[{"type":"SPOT"|"FOOD"|"HOTEL"|"TRANSPORT","title":string,"poiName":string|null,"startTime":"HH:mm"|null,"endTime":"HH:mm"|null,"cost":number|null,"note":string|null}]}]}(days 只含一天)
+要求:这一天 3-6 项;节奏合理(景点→午餐→景点→晚餐);**地理位置就近原则:安排集中在同一区域,按游览顺序就近排列,不走回头路**;**绝不重复用户其他天已有的地点,可以选同类型的新区域**;**若提供了天气预报:降雨/降雪天优先安排室内(博物馆/美术馆/商场/茶馆等),晴天优先户外,并在 note 里自然提一句天气贴士**;poiName 尽量使用高德地图能搜到的正式地名;绝不输出经纬度;note 用一两句口语化中文说清看点或贴士,避免 AI 腔;dayIndex 固定为 0;只输出 JSON,不要输出任何解释。`;
+
 const itemSchema = z.object({
   type: z.enum(['SPOT', 'FOOD', 'HOTEL', 'TRANSPORT']),
   title: z.string().min(1),
@@ -294,6 +298,98 @@ export class AiService {
       );
     }
     return { title, text };
+  }
+
+  /**
+   * 为行程中单独一天生成安排(空天/临时加的天),不触碰其他天。
+   * 上下文注入其他天已有地点避免重复;天气只查当日;落库前确认客户端在线。
+   */
+  async generateDay(
+    dayId: string,
+    emit: SseEmit,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const day = await this.prisma.tripDay.findUnique({
+      where: { id: dayId },
+      include: {
+        trip: {
+          include: {
+            days: {
+              orderBy: { dayIndex: 'asc' },
+              include: { items: { orderBy: { orderIndex: 'asc' } } },
+            },
+          },
+        },
+      },
+    });
+    if (!day) {
+      emit({ type: 'error', message: '行程日期不存在' });
+      return;
+    }
+    const trip = day.trip;
+    emit({ type: 'progress', text: `正在规划 Day ${day.dayIndex + 1}…` });
+    const dateStr = day.date.toISOString().slice(0, 10);
+    // 其他天的已有安排 → 提示词去重
+    const existing = trip.days
+      .filter((d) => d.id !== day.id)
+      .map(
+        (d) =>
+          `Day ${d.dayIndex + 1}:${d.items.map((i) => i.title).join('、') || '无'}`,
+      )
+      .join('\n');
+    const weatherByDay = await this.buildWeatherMap(trip.destination, day.date, 1);
+    const weatherHint = this.formatWeatherHint(weatherByDay);
+    const userPrompt =
+      `目的地:${trip.destination}\n` +
+      `要规划的是 ${dateStr}(整个行程的第 ${day.dayIndex + 1} 天)。\n` +
+      weatherHint +
+      (existing ? `其他天已有安排(不要重复):\n${existing}\n` : '') +
+      `请输出这一天的行程 JSON(days 数组只含 1 个 dayIndex 为 0 的天)。`;
+    emit({ type: 'progress', text: 'AI 正在生成当日安排…' });
+    let plan: Plan | null = null;
+    try {
+      plan = await this.producePlan(
+        [
+          { role: 'system', content: DAY_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+        () => this.buildMockPlan(trip.destination, 1),
+        emit,
+        signal,
+      );
+    } catch (e) {
+      emit({
+        type: 'error',
+        message: e instanceof Error ? e.message : '生成失败,请重试',
+      });
+      return;
+    }
+    if (!plan || !plan.days.length) {
+      emit({ type: 'error', message: '生成失败,请重试' });
+      return;
+    }
+    // 模型若给了多天,拍平为一天(上限 6 项)
+    const items = plan.days.flatMap((d) => d.items).slice(0, 6);
+    const oneDay: Plan = { days: [{ dayIndex: 0, items }] };
+    if (this.amapKey) {
+      emit({ type: 'progress', text: '正在补全地点坐标…' });
+      await this.enrichCoordinates(oneDay, trip.destination);
+      emit({ type: 'progress', text: '正在优化游览顺序…' });
+      // 单天场景:跨天 rebalance/weatherSwap 自然为空操作,日内排序与时间轴照常
+      this.optimizePlan(oneDay, weatherByDay);
+    }
+    if (signal?.aborted) {
+      this.logger.log('客户端已断开,放弃单天落库');
+      return;
+    }
+    emit({ type: 'progress', text: '正在写入行程…' });
+    const itemCount = await this.applyDayPlan(
+      trip.id,
+      day.id,
+      oneDay.days[0].items,
+      `规划 Day ${day.dayIndex + 1}(${dateStr})`,
+    );
+    emit({ type: 'done', dayCount: 1, itemCount });
   }
 
   /** 基于当前行程与用户指令整体重生成行程 */
@@ -787,6 +883,54 @@ export class AiService {
         ],
       });
       return { dayCount, itemCount };
+    });
+  }
+
+  /** 事务内重建某一天(而非整趟)的 items,并写入一条 AI 对话记录 */
+  private async applyDayPlan(
+    tripId: string,
+    dayId: string,
+    items: PlanItem[],
+    userText: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.itineraryItem.deleteMany({ where: { dayId } });
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        await tx.itineraryItem.create({
+          data: {
+            dayId,
+            orderIndex: i + 1,
+            type: it.type,
+            title: it.title,
+            poiId: it.poiId ?? null,
+            poiType: it.poiType ?? null,
+            rating: it.rating ?? null,
+            lng: it.lng ?? null,
+            lat: it.lat ?? null,
+            startTime: it.startTime,
+            endTime: it.endTime,
+            cost: it.cost,
+            note: it.note,
+            rawAi: it as unknown as Prisma.InputJsonValue,
+          },
+        });
+      }
+      await tx.trip.update({
+        where: { id: tripId },
+        data: { updatedAt: new Date() },
+      });
+      await tx.aiConversation.createMany({
+        data: [
+          { tripId, role: 'user', content: userText },
+          {
+            tripId,
+            role: 'assistant',
+            content: `已生成单日行程,共 ${items.length} 个条目`,
+          },
+        ],
+      });
+      return items.length;
     });
   }
 
