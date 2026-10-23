@@ -5,6 +5,7 @@ import { MapPinned } from 'lucide-react'
 import { useAuthStore } from '../../stores/auth'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
+import { AuthLayout } from './auth-layout'
 
 export default function LoginPage() {
   const status = useAuthStore((s) => s.status)
@@ -42,15 +43,16 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 px-4">
+    <AuthLayout>
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
         className="w-full max-w-sm"
       >
+        {/* 小屏品牌头(大屏由左侧面板承载) */}
         <div className="mb-8 flex flex-col items-center gap-3">
-          <span className="flex size-11 items-center justify-center rounded-2xl bg-accent-600 text-white">
+          <span className="flex size-11 items-center justify-center rounded-2xl bg-accent-600 text-white lg:hidden">
             <MapPinned className="size-5.5" />
           </span>
           <div className="text-center">
@@ -112,6 +114,6 @@ export default function LoginPage() {
           </Link>
         </p>
       </motion.div>
-    </div>
+    </AuthLayout>
   )
 }

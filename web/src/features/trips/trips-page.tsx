@@ -174,7 +174,7 @@ export default function TripsPage() {
     trips && cityFilter ? trips.filter((t) => destinationMatches(t.destination, cityFilter)) : trips
 
   return (
-    <div className="min-h-screen bg-zinc-50">
+    <div className="bg-ambient min-h-screen">
       <AppHeader />
       <main className="mx-auto max-w-6xl px-6 py-10">
         <div className="mb-8 flex items-center justify-between">

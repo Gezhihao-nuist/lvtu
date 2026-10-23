@@ -1,9 +1,13 @@
 @import 'tailwindcss';
+@import '@fontsource/plus-jakarta-sans/500.css';
+@import '@fontsource/plus-jakarta-sans/600.css';
+@import '@fontsource/plus-jakarta-sans/700.css';
+@import '@fontsource/plus-jakarta-sans/800.css';
 
 /*
  * 旅图设计系统
  * 方向:高级简洁(对标 Linear / Airbnb)
- * - 系统字体优先(apple-design:平台字体自带光学尺寸与字距调校)
+ * - 展示字体 Plus Jakarta Sans(拉丁/数字,自托管无网络依赖)+ CJK 系统字体
  * - 单主色(teal)+ zinc 中性灰阶,大量留白
  * - 大标题负字距、行高随字号反向变化
  * - 圆角 2xl 起步,极浅阴影
@@ -12,9 +16,9 @@
 
 @theme {
   --font-sans:
-    -apple-system, BlinkMacSystemFont, 'SF Pro SC', 'SF Pro Text', 'PingFang SC',
-    'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
-    sans-serif;
+    'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'SF Pro SC', 'SF Pro Text',
+    'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei', 'Helvetica Neue',
+    Helvetica, Arial, sans-serif;
 
   /* 主色:teal,旅行的清爽感,比蓝更不无聊 */
   --color-accent-50: #f0fdfa;
@@ -131,6 +135,14 @@
   /* 数字表格化(日期/预算等对齐场景) */
   .tnum {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* 环境光背景:页面底层的 teal 渐变晕染,打破纯灰的平淡 */
+  .bg-ambient {
+    background:
+      radial-gradient(52rem 30rem at 85% -10%, rgb(20 184 166 / 0.08), transparent 60%),
+      radial-gradient(40rem 26rem at -10% 20%, rgb(13 148 136 / 0.06), transparent 55%),
+      var(--color-zinc-50);
   }
 }
 
