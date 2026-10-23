@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GeoService } from '../src/geo/geo.service.js';
 import type { PrismaService } from '../src/prisma/prisma.service.js';
 import { TripService } from '../src/trip/trip.service.js';
 
@@ -33,6 +34,11 @@ describe('TripService', () => {
     };
     $transaction: ReturnType<typeof vi.fn>;
   };
+  let geoMock: {
+    searchPoi: ReturnType<typeof vi.fn>;
+    getCityCenter: ReturnType<typeof vi.fn>;
+    getPoiDetail: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -53,7 +59,15 @@ describe('TripService', () => {
       },
       $transaction: vi.fn(),
     };
-    service = new TripService(prismaMock as unknown as PrismaService);
+    geoMock = {
+      searchPoi: vi.fn(),
+      getCityCenter: vi.fn(),
+      getPoiDetail: vi.fn(),
+    };
+    service = new TripService(
+      prismaMock as unknown as PrismaService,
+      geoMock as unknown as GeoService,
+    );
   });
 
   describe('parseRange', () => {
@@ -395,6 +409,121 @@ describe('TripService', () => {
       await expect(service.publicDetail('tX')).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  describe('locateItem(无坐标卡片实时定位)', () => {
+    const itemWith = (overrides: Record<string, unknown>) => ({
+      id: 'i1',
+      dayId: 'd1',
+      type: 'SPOT',
+      title: '杭州博物馆参观',
+      lng: null,
+      lat: null,
+      poiId: null,
+      rating: null,
+      poiType: null,
+      rawAi: { poiName: '杭州博物馆' },
+      day: {
+        id: 'd1',
+        tripId: 't1',
+        items: [
+          { id: 'i9', lng: 120.15, lat: 30.22 },
+          { id: 'i8', lng: 120.16, lat: 30.23 },
+        ],
+        trip: { id: 't1', destination: '杭州' },
+      },
+      ...overrides,
+    });
+
+    it('正常定位:锚点就近选候选,回写坐标/评分/类目并 bump', async () => {
+      prismaMock.itineraryItem.findUnique.mockResolvedValue(itemWith({}));
+      geoMock.searchPoi.mockResolvedValue([
+        { id: 'p1', name: '杭州博物馆', type: '博物馆', address: '', lng: 120.151, lat: 30.221 },
+        { id: 'p2', name: '杭州博物馆分店', type: '博物馆', address: '', lng: 121.5, lat: 31.5 },
+      ]);
+      geoMock.getPoiDetail.mockResolvedValue({ rating: 4.6, type: '博物馆;展览馆' });
+      prismaMock.itineraryItem.update.mockImplementation(async ({ data }: { data: unknown }) => ({
+        ...itemWith({}),
+        ...(data as object),
+      }));
+
+      const result = await service.locateItem('i1', 't1');
+
+      // 搜索词用 rawAi.poiName 而非 title
+      expect(geoMock.searchPoi).toHaveBeenCalledWith('杭州博物馆', '杭州');
+      const updateArg = prismaMock.itineraryItem.update.mock.calls[0]?.[0] as {
+        data: { lng: number; poiId: string; rating: number; poiType: string };
+      };
+      // 选离锚点近的 p1 而不是同名远候选 p2
+      expect(updateArg.data.poiId).toBe('p1');
+      expect(updateArg.data.lng).toBe(120.151);
+      expect(updateArg.data.rating).toBe(4.6);
+      expect(updateArg.data.poiType).toBe('博物馆;展览馆');
+      expect(result).toHaveProperty('lng', 120.151);
+      // bump 刷新行程 updatedAt
+      expect(prismaMock.trip.update).toHaveBeenCalled();
+    });
+
+    it('已有坐标:直接返回,不发搜索', async () => {
+      prismaMock.itineraryItem.findUnique.mockResolvedValue(
+        itemWith({ lng: 120.1, lat: 30.2 }),
+      );
+      const result = await service.locateItem('i1', 't1');
+      expect(geoMock.searchPoi).not.toHaveBeenCalled();
+      expect(result).toHaveProperty('lng', 120.1);
+    });
+
+    it('TRANSPORT 类型:BadRequest,不发搜索', async () => {
+      prismaMock.itineraryItem.findUnique.mockResolvedValue(
+        itemWith({ type: 'TRANSPORT', title: '返程' }),
+      );
+      await expect(service.locateItem('i1', 't1')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(geoMock.searchPoi).not.toHaveBeenCalled();
+    });
+
+    it('搜索无结果(泛名餐饮):NotFoundException,不绑坐标', async () => {
+      prismaMock.itineraryItem.findUnique.mockResolvedValue(
+        itemWith({ type: 'FOOD', title: '当地特色午餐', rawAi: null }),
+      );
+      geoMock.searchPoi.mockResolvedValue([]);
+      await expect(service.locateItem('i1', 't1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prismaMock.itineraryItem.update).not.toHaveBeenCalled();
+    });
+
+    it('FOOD 最近候选超 60km:NotFoundException,宁缺勿错', async () => {
+      prismaMock.itineraryItem.findUnique.mockResolvedValue(
+        itemWith({ type: 'FOOD', title: '神秘餐厅' }),
+      );
+      geoMock.searchPoi.mockResolvedValue([
+        { id: 'p1', name: '神秘餐厅', type: '餐厅', address: '', lng: 121.8, lat: 31.2 },
+      ]);
+      await expect(service.locateItem('i1', 't1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prismaMock.itineraryItem.update).not.toHaveBeenCalled();
+    });
+
+    it('城市限定无结果:用「目的地+名称」重搜', async () => {
+      prismaMock.itineraryItem.findUnique.mockResolvedValue(itemWith({}));
+      geoMock.searchPoi
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { id: 'p1', name: '杭州博物馆', type: '博物馆', address: '', lng: 120.151, lat: 30.221 },
+        ]);
+      geoMock.getPoiDetail.mockResolvedValue(null);
+      prismaMock.itineraryItem.update.mockImplementation(async ({ data }: { data: unknown }) => ({
+        ...itemWith({}),
+        ...(data as object),
+      }));
+
+      await service.locateItem('i1', 't1');
+
+      expect(geoMock.searchPoi).toHaveBeenNthCalledWith(2, '杭州杭州博物馆', '杭州');
     });
   });
 });

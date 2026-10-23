@@ -89,18 +89,14 @@ function SortableItemCard({
         role="button"
         tabIndex={0}
         onClick={() => {
-          // 有坐标:点击卡片让地图聚焦过去(编辑走右上角菜单);
-          // 无坐标:保持原有行为,点击打开编辑框
-          if (item.lng != null && item.lat != null) onLocate()
-          else onEdit()
+          // 点击卡片一律请求地图定位:有坐标直接聚焦;
+          // 无坐标由父组件走实时定位(成功则聚焦并回写坐标,失败 toast 提示)
+          onLocate()
         }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            if (item.lng != null && item.lat != null) onLocate()
-            else onEdit()
-          }
+          if (e.key === 'Enter') onLocate()
         }}
-        aria-label={item.lng != null ? `在地图上定位${item.title}` : `编辑${item.title}`}
+        aria-label={`在地图上定位${item.title}`}
         className="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-zinc-200/70 bg-white p-3.5 shadow-card transition-shadow hover:shadow-float"
       >
         <button

@@ -40,6 +40,13 @@ export class TripItemController {
     await this.trip.removeItem(id, access.tripId);
   }
 
+  /** 无坐标条目实时定位(点击卡片触发,成功则回写坐标) */
+  @Post(':id/locate')
+  locate(@Param('id') id: string, @Req() req: Request) {
+    const access = (req as Request & { tripAccess: TripAccess }).tripAccess;
+    return this.trip.locateItem(id, access.tripId);
+  }
+
   @Post('reorder')
   reorder(@Body() dto: ReorderItemsDto) {
     return this.trip.reorder(dto);

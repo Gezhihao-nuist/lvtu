@@ -75,6 +75,7 @@ function InlineTitle({ tripId, value }: { tripId: string; value: string }) {
 
 export default function TripEditorPage() {
   const { id = '' } = useParams()
+  const queryClient = useQueryClient()
   const [activeDayIndex, setActiveDayIndex] = useState(0)
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null)
   const [focusItemId, setFocusItemId] = useState<string | null>(null)
@@ -109,6 +110,31 @@ export default function TripEditorPage() {
 
   const days = trip ? [...trip.days].sort((a, b) => a.dayIndex - b.dayIndex) : []
   const activeDay = days[Math.min(activeDayIndex, Math.max(days.length - 1, 0))]
+
+  // 点击无坐标卡片:实时定位(后端防错位规则),成功则聚焦地图;失败仅提示
+  const locateMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api(`/trips/${id}/items/${itemId}/locate`, { method: 'POST' }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['trip', id] }),
+  })
+  const handleLocateItem = (itemId: string) => {
+    const item = days.flatMap((d) => d.items).find((i) => i.id === itemId)
+    if (!item) return
+    if (item.lng != null && item.lat != null) {
+      setFocusItemId(itemId)
+      return
+    }
+    if (locateMutation.isPending) return
+    locateMutation.mutate(itemId, {
+      onSuccess: () => setFocusItemId(itemId),
+      onError: (err) =>
+        toast.error(
+          err instanceof Error && err.message
+            ? err.message
+            : '地图上找不到这个地方,可点右上角菜单编辑',
+        ),
+    })
+  }
 
   if (tripQuery.isPending) {
     return (
@@ -186,7 +212,7 @@ export default function TripEditorPage() {
           <DayTabs days={days} activeIndex={activeDay?.dayIndex ?? 0} onSelect={setActiveDayIndex} weatherByDate={weatherByDate} />
           <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50/60">
             {activeDay && (
-              <Timeline trip={trip} day={activeDay} onHoverItem={setHoveredItemId} onLocate={setFocusItemId} />
+              <Timeline trip={trip} day={activeDay} onHoverItem={setHoveredItemId} onLocate={handleLocateItem} />
             )}
           </div>
         </aside>

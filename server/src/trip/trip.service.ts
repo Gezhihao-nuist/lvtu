@@ -4,6 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ItineraryItem, Prisma, Trip, TripDay } from '@prisma/client';
+import { haversineKm } from '../ai/optimizer.js';
+import { GeoService } from '../geo/geo.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import {
   CreateItemDto,
@@ -39,7 +41,10 @@ function eachDate(start: Date, end: Date): Date[] {
 
 @Injectable()
 export class TripService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly geo: GeoService,
+  ) {}
 
   /** 列出当前用户 owner 或协作的所有行程(按更新时间降序) */
   async list(userId: string) {
@@ -378,6 +383,92 @@ export class TripService {
   async removeItem(itemId: string, tripId: string) {
     await this.prisma.itineraryItem.delete({ where: { id: itemId } });
     await this.bump(tripId);
+  }
+
+  /**
+   * 单条目实时定位:点击无坐标卡片时按需补坐标。
+   * 与 AI enrich 同一套防错位规则:rawAi.poiName 优先 → 城市限定搜索 →
+   * 「目的地+名称」重搜 → 天锚点(当天有坐标条目质心,无则城市中心)就近 →
+   * FOOD/HOTEL 超 60km、SPOT 超 200km 宁缺勿错(不绑错误坐标)。
+   */
+  async locateItem(itemId: string, tripId: string) {
+    const item = await this.prisma.itineraryItem.findUnique({
+      where: { id: itemId },
+      include: { day: { include: { items: true, trip: true } } },
+    });
+    if (!item || item.day.tripId !== tripId) {
+      throw new NotFoundException('条目不存在');
+    }
+    if (item.lng != null && item.lat != null) {
+      return this.serializeItem(item);
+    }
+    if (item.type === 'TRANSPORT') {
+      throw new BadRequestException('交通安排无需定位');
+    }
+
+    const rawPoi = (item.rawAi as { poiName?: unknown } | null)?.poiName;
+    const keyword =
+      typeof rawPoi === 'string' && rawPoi.trim() ? rawPoi.trim() : item.title;
+    const destination = item.day.trip.destination;
+
+    // 天锚点:当天有坐标条目的质心;没有则退到目的地城市中心
+    const coordItems = item.day.items.filter(
+      (i) => i.lng != null && i.lat != null,
+    );
+    let anchor: { lng: number; lat: number } | null = coordItems.length
+      ? {
+          lng:
+            coordItems.reduce((s, i) => s + (i.lng ?? 0), 0) / coordItems.length,
+          lat:
+            coordItems.reduce((s, i) => s + (i.lat ?? 0), 0) / coordItems.length,
+        }
+      : null;
+    if (!anchor) {
+      anchor = await this.geo.getCityCenter(destination).catch(() => null);
+    }
+
+    let pois: Awaited<ReturnType<GeoService['searchPoi']>> = [];
+    try {
+      pois = await this.geo.searchPoi(keyword, destination);
+    } catch {
+      /* 搜索失败走重搜兜底 */
+    }
+    if (!pois.length) {
+      try {
+        pois = await this.geo.searchPoi(`${destination}${keyword}`, destination);
+      } catch {
+        /* 重搜也失败按找不到处理 */
+      }
+    }
+    if (!pois.length) {
+      throw new NotFoundException('在地图上找不到这个地方,可在右上角菜单中编辑');
+    }
+
+    const best = pois
+      .map((p) => ({ p, d: anchor ? haversineKm(anchor, p) : 0 }))
+      .sort((a, b) => a.d - b.d)[0];
+    const limitKm = item.type === 'SPOT' ? 200 : 60;
+    if (anchor && best.d > limitKm) {
+      throw new NotFoundException('找到的同名地点离当天行程太远,未绑定坐标');
+    }
+
+    // 顺手补评分/细分类目(失败不阻塞定位)
+    let rating: number | null = null;
+    let poiType: string | null = null;
+    try {
+      const detail = await this.geo.getPoiDetail(best.p.id);
+      rating = detail?.rating ?? null;
+      poiType = detail?.type ?? null;
+    } catch {
+      /* 详情失败仅缺评分 */
+    }
+
+    const updated = await this.prisma.itineraryItem.update({
+      where: { id: itemId },
+      data: { lng: best.p.lng, lat: best.p.lat, poiId: best.p.id, rating, poiType },
+    });
+    await this.bump(tripId);
+    return this.serializeItem(updated);
   }
 
   /** 按数组顺序把某日条目重排为 orderIndex 1..n */
