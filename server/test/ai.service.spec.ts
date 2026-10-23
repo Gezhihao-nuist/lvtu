@@ -1,5 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiService } from '../src/ai/ai.service.js';
 import type { GeoService } from '../src/geo/geo.service.js';
 import type { PrismaService } from '../src/prisma/prisma.service.js';
@@ -182,6 +182,128 @@ describe('AiService', () => {
         dayCount: 3,
         itemCount: 12,
       });
+    });
+  });
+
+  describe('importFromText(攻略导入)', () => {
+    it('Mock 模式:走同一提炼管线并最终 done 落库', async () => {
+      configMock.get.mockReturnValue('');
+      prismaMock.trip.findUnique.mockResolvedValue({
+        id: 't1',
+        destination: '北京',
+        startDate: new Date('2026-11-01T00:00:00.000Z'),
+        endDate: new Date('2026-11-03T00:00:00.000Z'),
+        days: [
+          { id: 'd0', dayIndex: 0 },
+          { id: 'd1', dayIndex: 1 },
+          { id: 'd2', dayIndex: 2 },
+        ],
+      });
+      prismaMock.tripDay.findMany.mockResolvedValue([
+        { id: 'd0', dayIndex: 0 },
+        { id: 'd1', dayIndex: 1 },
+        { id: 'd2', dayIndex: 2 },
+      ]);
+      const tx = {
+        itineraryItem: { deleteMany: vi.fn(), create: vi.fn() },
+        trip: { update: vi.fn() },
+        aiConversation: { createMany: vi.fn() },
+      };
+      prismaMock.$transaction.mockImplementation(
+        async (cb: (tx: unknown) => unknown) => cb(tx),
+      );
+
+      const events: SseEvent[] = [];
+      await service.importFromText(
+        't1',
+        '第一天去天安门广场看升旗,中午吃烤鸭;第二天爬八达岭长城;第三天逛颐和园和圆明园。',
+        (e) => events.push(e),
+      );
+
+      const readProgress = events.find(
+        (e) =>
+          e['type'] === 'progress' &&
+          String(e['text']).includes('正在阅读攻略'),
+      );
+      expect(readProgress).toBeDefined();
+      expect(events[events.length - 1]).toMatchObject({
+        type: 'done',
+        dayCount: 3,
+        itemCount: 12,
+      });
+    });
+
+    it('行程不存在:推送 error 事件', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue(null);
+      const events: SseEvent[] = [];
+      await service.importFromText('tX', 'x'.repeat(30), (e) =>
+        events.push(e),
+      );
+      expect(events[0]).toMatchObject({ type: 'error' });
+    });
+  });
+
+  describe('fetchUrlText(SSRF 防护与解析)', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('私网/回环/内网地址:直接 400,不发任何请求', async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      await expect(
+        service.fetchUrlText('http://127.0.0.1/admin'),
+      ).rejects.toThrow('不可访问');
+      await expect(service.fetchUrlText('http://192.168.1.1/')).rejects.toThrow(
+        '不可访问',
+      );
+      await expect(
+        service.fetchUrlText('http://localhost:3000/api'),
+      ).rejects.toThrow('不可访问');
+      await expect(
+        service.fetchUrlText('http://10.0.0.8/internal'),
+      ).rejects.toThrow('不可访问');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('非 http/https 协议:400', async () => {
+      await expect(service.fetchUrlText('file:///etc/passwd')).rejects.toThrow(
+        '仅支持',
+      );
+    });
+
+    it('正常页面:返回标题与正文文本', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          url: 'https://example.com/note',
+          text: async () =>
+            '<html><head><title>北京三日游攻略</title><script>var a=1;</script></head><body>' +
+            '<p>第一天 天安门 故宫 景山公园 烤鸭 王府井 三里屯 后海 南锣鼓巷 什刹海</p>'.repeat(
+              10,
+            ) +
+            '</body></html>',
+        }),
+      );
+      const r = await service.fetchUrlText('https://example.com/note');
+      expect(r.title).toBe('北京三日游攻略');
+      expect(r.text.length).toBeGreaterThan(50);
+      expect(r.text).not.toContain('var a=1');
+    });
+
+    it('正文过少(反爬/需登录):422 引导手动粘贴', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          url: 'https://x.example.com/a',
+          text: async () => '<html><body>请登录</body></html>',
+        }),
+      );
+      await expect(
+        service.fetchUrlText('https://x.example.com/a'),
+      ).rejects.toThrow('请直接粘贴攻略文字');
     });
   });
 

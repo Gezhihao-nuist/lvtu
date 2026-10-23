@@ -7,13 +7,14 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { TripRoles } from '../trip/decorators/trip-roles.decorator.js';
 import { TripAccessGuard } from '../trip/guards/trip-access.guard.js';
 import { AiService } from './ai.service.js';
 import type { SseEmit } from './ai.service.js';
-import { ChatDto, GenerateTripDto } from './dto/ai.dto.js';
+import { ChatDto, FetchUrlDto, GenerateTripDto, ImportTripDto } from './dto/ai.dto.js';
 
 @Controller('ai')
 export class AiController {
@@ -45,6 +46,27 @@ export class AiController {
     await this.runSse(res, (emit, signal) =>
       this.ai.chat(tripId, dto.message, emit, signal),
     );
+  }
+
+  @Post('trips/:id/import')
+  @UseGuards(JwtAuthGuard, TripAccessGuard)
+  @TripRoles('OWNER', 'EDITOR')
+  async importGuide(
+    @Param('id') tripId: string,
+    @Body() dto: ImportTripDto,
+    @Res() res: Response,
+  ) {
+    await this.runSse(res, (emit, signal) =>
+      this.ai.importFromText(tripId, dto.content, emit, signal),
+    );
+  }
+
+  /** 抓取攻略 URL 正文(尽力而为;反爬站点会失败,前端应允许用户改用手动粘贴) */
+  @Post('fetch-url')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  fetchUrl(@Body() dto: FetchUrlDto) {
+    return this.ai.fetchUrlText(dto.url);
   }
 
   /**

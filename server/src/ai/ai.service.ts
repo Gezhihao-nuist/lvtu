@@ -6,7 +6,7 @@
  * 完全相同的 Zod 校验、坐标补全与落库流程,SSE 事件照常推送,
  * 保证无 key 也能完整演示。
  */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import OpenAI from 'openai';
@@ -26,6 +26,10 @@ export type SseEmit = (data: Record<string, unknown>) => void;
 const SYSTEM_PROMPT = `你是专业旅行规划师。根据用户给出的目的地、天数、日期与偏好,输出 JSON 格式行程。
 输出 schema:{"days":[{"dayIndex":0,"items":[{"type":"SPOT"|"FOOD"|"HOTEL"|"TRANSPORT","title":string,"poiName":string|null,"startTime":"HH:mm"|null,"endTime":"HH:mm"|null,"cost":number|null,"note":string|null}]}]}
 要求:每天 3-6 项;节奏合理(景点→午餐→景点→晚餐);**地理位置就近原则:同一天的景点必须集中在同一区域(同一城区/县城/景区),按游览顺序就近排列,不走回头路;相隔较远的区域分到不同天;餐厅要选在当天游览区域的附近**;**若提供了天气预报:降雨/降雪天优先安排室内景点(博物馆/美术馆/商场/茶馆等),晴天优先安排户外景点,并在对应条目的 note 里自然地提一句天气贴士(如带伞、防晒),不要生硬罗列**;poiName 尽量使用高德地图能搜到的正式地名;绝不输出经纬度;note 用一两句口语化中文说清看点或贴士,避免 AI 腔,不要出现「赋能」「沉浸式」这类词;dayIndex 从 0 开始;只输出 JSON,不要输出任何解释。`;
+
+const IMPORT_PROMPT = `你是旅行攻略整理师。用户会粘贴一篇旅行攻略(可能来自小红书/马蜂窝/穷游等),请把攻略中提到的地点与安排提炼成结构化行程,输出 JSON。
+输出 schema:{"days":[{"dayIndex":0,"items":[{"type":"SPOT"|"FOOD"|"HOTEL"|"TRANSPORT","title":string,"poiName":string|null,"startTime":"HH:mm"|null,"endTime":"HH:mm"|null,"cost":number|null,"note":string|null}]}]}
+要求:严格依据攻略文本提炼,提到什么排什么,不要虚构攻略里不存在的景点;攻略没提的天数可结合目的地常识补足,使每天都有 3-6 项;**地理位置就近原则:同一天的地点尽量集中在同一区域,按游览顺序就近排列**;poiName 尽量使用高德地图能搜到的正式地名;攻略中的排队/时段/避坑提示提炼进 note,用一两句口语化中文,不要 AI 腔;绝不输出经纬度;dayIndex 从 0 开始;只输出 JSON,不要输出任何解释。`;
 
 const itemSchema = z.object({
   type: z.enum(['SPOT', 'FOOD', 'HOTEL', 'TRANSPORT']),
@@ -72,6 +76,42 @@ async function mapLimit<T>(
     },
   );
   await Promise.all(workers);
+}
+
+/** HTML → 纯文本:去脚本/样式/标签,折叠空白,解常见实体 */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** SSRF 防护:仅 http/https,拦截回环/私网/内网域名(前缀匹配) */
+const BLOCKED_HOST =
+  /^(localhost|127\..*|0\.0\.0\.0|10\..*|192\.168\..*|169\.254\..*|172\.(1[6-9]|2\d|3[01])\..*|\[?::1\]?|.*\.(internal|local|lan))$/i;
+
+function assertFetchable(urlStr: string): void {
+  let u: URL;
+  try {
+    u = new URL(urlStr);
+  } catch {
+    throw new BadRequestException('链接格式不正确');
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new BadRequestException('仅支持 http/https 链接');
+  }
+  if (BLOCKED_HOST.test(u.hostname)) {
+    throw new BadRequestException('该地址不可访问');
+  }
 }
 
 @Injectable()
@@ -147,6 +187,113 @@ export class AiService {
       weatherByDay,
       signal,
     );
+  }
+
+  /** 攻略文本导入:提炼攻略为结构化行程,走与 generate 相同的坐标补全/优化/落库管线 */
+  async importFromText(
+    tripId: string,
+    content: string,
+    emit: SseEmit,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+      include: { days: true },
+    });
+    if (!trip) {
+      emit({ type: 'error', message: '行程不存在' });
+      return;
+    }
+    emit({ type: 'progress', text: '正在阅读攻略…' });
+    const start = trip.startDate.toISOString().slice(0, 10);
+    const end = trip.endDate.toISOString().slice(0, 10);
+    const weatherByDay = await this.buildWeatherMap(
+      trip.destination,
+      trip.startDate,
+      trip.days.length,
+    );
+    const weatherHint = this.formatWeatherHint(weatherByDay);
+    const userPrompt =
+      `目的地:${trip.destination}\n` +
+      `日期:${start} 至 ${end},共 ${trip.days.length} 天\n` +
+      weatherHint +
+      `攻略原文:\n${content}\n` +
+      `请输出提炼后的完整行程 JSON。`;
+    emit({ type: 'progress', text: 'AI 正在提炼攻略中的地点…' });
+    let plan: Plan | null = null;
+    try {
+      plan = await this.producePlan(
+        [
+          { role: 'system', content: IMPORT_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+        () => this.buildMockPlan(trip.destination, trip.days.length),
+        emit,
+        signal,
+      );
+    } catch (e) {
+      emit({
+        type: 'error',
+        message: e instanceof Error ? e.message : '提炼失败,请重试',
+      });
+      return;
+    }
+    if (!plan) {
+      emit({ type: 'error', message: '没能从攻略中提炼出行程,请换一篇试试' });
+      return;
+    }
+    await this.finalize(
+      tripId,
+      trip.destination,
+      plan,
+      '攻略导入',
+      emit,
+      weatherByDay,
+      signal,
+    );
+  }
+
+  /**
+   * 抓取攻略网页正文(供「导入攻略」预填)。
+   * 反爬/需登录站点(小红书等)大概率失败,抛 422 引导用户改用手动粘贴;
+   * 重定向后的最终地址也要过 SSRF 检查,防 302 绕过。
+   */
+  async fetchUrlText(
+    rawUrl: string,
+  ): Promise<{ title: string | null; text: string }> {
+    assertFetchable(rawUrl);
+    let res: globalThis.Response;
+    try {
+      res = await fetch(rawUrl, {
+        signal: AbortSignal.timeout(10_000),
+        headers: {
+          'user-agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+          accept: 'text/html,application/xhtml+xml',
+        },
+      });
+    } catch {
+      throw new UnprocessableEntityException(
+        '抓取失败(超时或目标拒绝访问),请直接粘贴攻略文字',
+      );
+    }
+    if (res.url && res.url !== rawUrl) assertFetchable(res.url);
+    if (!res.ok) {
+      throw new UnprocessableEntityException(
+        `抓取失败(HTTP ${res.status}),请直接粘贴攻略文字`,
+      );
+    }
+    // 截取前 2MB 再解析,防超大页面撑内存
+    const html = (await res.text()).slice(0, 2_000_000);
+    const title =
+      /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1]?.trim() ?? null;
+    const text = htmlToText(html).slice(0, 15_000);
+    if (text.length < 50) {
+      throw new UnprocessableEntityException(
+        '页面正文过少(可能是反爬或需登录),请直接粘贴攻略文字',
+      );
+    }
+    return { title, text };
   }
 
   /** 基于当前行程与用户指令整体重生成行程 */
