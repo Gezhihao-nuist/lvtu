@@ -85,6 +85,27 @@ export interface BudgetSummary {
   perPerson: number
 }
 
+/** 行程体检单天报告 */
+export interface DayHealth {
+  dayIndex: number
+  date: string
+  itemCount: number
+  totalKm: number
+  longestLegKm: number
+  estMinutes: number
+  pace: 'tight' | 'ok' | 'loose' | 'empty'
+  issues: string[]
+}
+
+/** 行程体检报告(GET /trips/:id/health) */
+export interface HealthReport {
+  score: number
+  grade: 'A' | 'B' | 'C' | 'D'
+  totalKm: number
+  days: DayHealth[]
+  suggestions: string[]
+}
+
 /** 高德单日天气预报(仅覆盖当天 + 未来 3 天) */
 export interface WeatherCast {
   date: string

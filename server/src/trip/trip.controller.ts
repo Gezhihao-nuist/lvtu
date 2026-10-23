@@ -15,12 +15,16 @@ import type { AuthUser } from '../common/guards/jwt-auth.guard.js';
 import { TripRoles } from './decorators/trip-roles.decorator.js';
 import { CreateTripDto, UpdateTripDto } from './dto/trip.dto.js';
 import { TripAccessGuard } from './guards/trip-access.guard.js';
+import { TripHealthService } from './trip-health.service.js';
 import { TripService } from './trip.service.js';
 
 @Controller('trips')
 @UseGuards(JwtAuthGuard)
 export class TripController {
-  constructor(private readonly trip: TripService) {}
+  constructor(
+    private readonly trip: TripService,
+    private readonly health: TripHealthService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: AuthUser) {
@@ -42,6 +46,12 @@ export class TripController {
   @UseGuards(TripAccessGuard)
   budget(@Param('id') id: string) {
     return this.trip.budget(id);
+  }
+
+  @Get(':id/health')
+  @UseGuards(TripAccessGuard)
+  healthReport(@Param('id') id: string) {
+    return this.health.report(id);
   }
 
   @Patch(':id')

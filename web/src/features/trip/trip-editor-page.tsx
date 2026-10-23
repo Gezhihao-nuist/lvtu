@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, CircleAlert, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
+import { ArrowLeft, CircleAlert, HeartPulse, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange } from '../../lib/format'
 import type { TripDetail, WeatherCast } from '../../types'
@@ -14,6 +14,7 @@ import { Timeline } from './timeline'
 import { AiPanel } from './ai-panel'
 import { MapView } from './map-view'
 import { BudgetDialog } from './budget-dialog'
+import { HealthDialog } from './health-dialog'
 import { ShareDialog } from './share-dialog'
 
 function InlineTitle({ tripId, value }: { tripId: string; value: string }) {
@@ -79,6 +80,7 @@ export default function TripEditorPage() {
   const [aiOpen, setAiOpen] = useState(false)
   const [budgetOpen, setBudgetOpen] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
+  const [healthOpen, setHealthOpen] = useState(false)
 
   const tripQuery = useQuery({
     queryKey: ['trip', id],
@@ -157,6 +159,10 @@ export default function TripEditorPage() {
             <Wallet />
             预算
           </Button>
+          <Button size="sm" variant="outline" onClick={() => setHealthOpen(true)}>
+            <HeartPulse />
+            体检
+          </Button>
           <Button size="sm" onClick={() => setAiOpen(true)}>
             <Sparkles />
             AI 规划
@@ -182,6 +188,7 @@ export default function TripEditorPage() {
       <AiPanel open={aiOpen} onClose={() => setAiOpen(false)} trip={trip} />
       <BudgetDialog open={budgetOpen} onClose={() => setBudgetOpen(false)} trip={trip} />
       <ShareDialog open={shareOpen} onClose={() => setShareOpen(false)} trip={trip} />
+      <HealthDialog open={healthOpen} onClose={() => setHealthOpen(false)} trip={trip} />
     </div>
   )
 }
