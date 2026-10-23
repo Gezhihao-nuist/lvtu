@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, CircleAlert, ClipboardList, HeartPulse, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
+import { ArrowLeft, CircleAlert, ClipboardList, FileDown, HeartPulse, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange } from '../../lib/format'
 import type { TripDetail, WeatherCast } from '../../types'
@@ -164,6 +164,14 @@ export default function TripEditorPage() {
           </Button>
           <Button size="icon" variant="outline" title="行前清单" onClick={() => setChecklistOpen(true)}>
             <ClipboardList />
+          </Button>
+          <Button
+            size="icon"
+            variant="outline"
+            title="导出行程单(打印/存 PDF)"
+            onClick={() => window.open(`/trips/${trip.id}/print`, '_blank')}
+          >
+            <FileDown />
           </Button>
           <Button size="sm" className="ml-1" onClick={() => setAiOpen(true)}>
             <Sparkles />

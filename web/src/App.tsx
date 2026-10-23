@@ -8,6 +8,7 @@ import LoginPage from './features/auth/login-page'
 import RegisterPage from './features/auth/register-page'
 import TripsPage from './features/trips/trips-page'
 import TripEditorPage from './features/trip/trip-editor-page'
+import TripPrintPage from './features/trip/trip-print-page'
 import SharePage from './features/share/share-page'
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -63,6 +64,14 @@ export default function App() {
           element={
             <RequireAuth>
               <TripEditorPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/trips/:id/print"
+          element={
+            <RequireAuth>
+              <TripPrintPage />
             </RequireAuth>
           }
         />
