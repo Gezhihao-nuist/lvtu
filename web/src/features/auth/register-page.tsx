@@ -29,8 +29,8 @@ export default function RegisterPage() {
       setError('请输入正确的邮箱地址')
       return
     }
-    if (password.length < 6) {
-      setError('密码至少 6 位')
+    if (password.length < 8 || !/(?=.*[A-Za-z])(?=.*\d)/.test(password)) {
+      setError('密码至少 8 位,且需同时包含字母和数字')
       return
     }
     setPending(true)
@@ -104,7 +104,7 @@ export default function RegisterPage() {
                 id="reg-password"
                 type="password"
                 autoComplete="new-password"
-                placeholder="至少 6 位"
+                placeholder="至少 8 位,含字母和数字"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />

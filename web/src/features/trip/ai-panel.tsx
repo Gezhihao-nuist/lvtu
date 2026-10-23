@@ -46,11 +46,26 @@ export function AiPanel({ open, onClose, trip }: AiPanelProps) {
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') handleClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, onClose])
+
+  // 卸载兜底:组件销毁时中断仍在进行的 SSE
+  useEffect(() => () => abortRef.current?.abort(), [])
+
+  /**
+   * 关闭面板必须中断 SSE:否则后端会继续烧模型 token,
+   * 并在用户不知情时 applyPlan 整表覆盖行程
+   */
+  const handleClose = () => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setPhase((p) => (p === 'running' ? 'idle' : p))
+    onClose()
+  }
 
   const run = async () => {
     abortRef.current?.abort()
@@ -108,7 +123,7 @@ export function AiPanel({ open, onClose, trip }: AiPanelProps) {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              onClick={onClose}
+              onClick={handleClose}
             />
             <motion.aside
               role="dialog"
@@ -129,7 +144,7 @@ export function AiPanel({ open, onClose, trip }: AiPanelProps) {
                 <button
                   type="button"
                   aria-label="关闭"
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600"
                 >
                   <X className="size-4" />

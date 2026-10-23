@@ -37,6 +37,19 @@ model User {
   collaborators TripCollaborator[]
   templates     TripTemplate[]
   expenses      Expense[]
+  refreshTokens RefreshToken[]
+}
+
+/** refresh token 会话表:存 sha256 哈希,轮换时作废旧行;JWT 合法但哈希不存在 = 重用,全端吊销 */
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Trip {

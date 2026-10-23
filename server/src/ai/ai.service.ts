@@ -85,11 +85,12 @@ export class AiService {
     private readonly cfg: ConfigService,
   ) {}
 
-  /** 生成整份 AI 行程,SSE 推送 progress/done/error 事件 */
+  /** 生成整份 AI 行程,SSE 推送 progress/done/error 事件;signal 中断(客户端断开)则不再落库 */
   async generate(
     tripId: string,
     preferences: string | undefined,
     emit: SseEmit,
+    signal?: AbortSignal,
   ): Promise<void> {
     const trip = await this.prisma.trip.findUnique({
       where: { id: tripId },
@@ -124,6 +125,7 @@ export class AiService {
         ],
         () => this.buildMockPlan(trip.destination, trip.days.length),
         emit,
+        signal,
       );
     } catch (e) {
       emit({
@@ -143,11 +145,17 @@ export class AiService {
       preferences?.trim() || '生成行程',
       emit,
       weatherByDay,
+      signal,
     );
   }
 
   /** 基于当前行程与用户指令整体重生成行程 */
-  async chat(tripId: string, message: string, emit: SseEmit): Promise<void> {
+  async chat(
+    tripId: string,
+    message: string,
+    emit: SseEmit,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const trip = await this.prisma.trip.findUnique({
       where: { id: tripId },
       include: {
@@ -197,6 +205,7 @@ export class AiService {
         ],
         () => this.buildMockPlan(trip.destination, trip.days.length),
         emit,
+        signal,
       );
     } catch (e) {
       emit({
@@ -209,10 +218,18 @@ export class AiService {
       emit({ type: 'error', message: '生成失败,请重试' });
       return;
     }
-    await this.finalize(tripId, trip.destination, plan, message, emit, weatherByDay);
+    await this.finalize(
+      tripId,
+      trip.destination,
+      plan,
+      message,
+      emit,
+      weatherByDay,
+      signal,
+    );
   }
 
-  /** 坐标补全(可选)+ 事务落库 + done 事件 */
+  /** 坐标补全(可选)+ 事务落库 + done 事件;落库前最后确认客户端仍在线 */
   private async finalize(
     tripId: string,
     destination: string,
@@ -220,12 +237,17 @@ export class AiService {
     userText: string,
     emit: SseEmit,
     weatherByDay?: Map<number, WeatherCast>,
+    signal?: AbortSignal,
   ) {
     if (this.amapKey) {
       emit({ type: 'progress', text: '正在补全地点坐标…' });
       await this.enrichCoordinates(plan, destination);
       emit({ type: 'progress', text: '正在按地理位置优化游览顺序…' });
       this.optimizePlan(plan, weatherByDay);
+    }
+    if (signal?.aborted) {
+      this.logger.log('客户端已断开,放弃落库(行程保持原样)');
+      return;
     }
     emit({ type: 'progress', text: '正在写入行程…' });
     const { dayCount, itemCount } = await this.applyPlan(
@@ -297,6 +319,7 @@ export class AiService {
     messages: OpenAI.ChatCompletionMessageParam[],
     mockFactory: () => Plan,
     emit: SseEmit,
+    signal?: AbortSignal,
   ): Promise<Plan | null> {
     if (!this.deepseekKey) {
       emit({ type: 'progress', text: '未配置模型 Key,使用内置演示行程' });
@@ -304,21 +327,24 @@ export class AiService {
       return this.parsePlan(JSON.stringify(mockFactory())).plan;
     }
     try {
-      const content = await this.callModel(messages);
+      const content = await this.callModel(messages, signal);
       let { plan, error } = this.parsePlan(content);
       if (!plan) {
         emit({ type: 'progress', text: '行程校验未通过,正在自动修复…' });
-        const repaired = await this.callModel([
-          {
-            role: 'system',
-            content:
-              '之前输出的行程 JSON 未通过校验。请修复后只输出修复后的完整 JSON,不要输出解释。',
-          },
-          {
-            role: 'user',
-            content: `原始输出:\n${content}\n\n校验错误:\n${error ?? '未知'}`,
-          },
-        ]);
+        const repaired = await this.callModel(
+          [
+            {
+              role: 'system',
+              content:
+                '之前输出的行程 JSON 未通过校验。请修复后只输出修复后的完整 JSON,不要输出解释。',
+            },
+            {
+              role: 'user',
+              content: `原始输出:\n${content}\n\n校验错误:\n${error ?? '未知'}`,
+            },
+          ],
+          signal,
+        );
         ({ plan } = this.parsePlan(repaired));
       }
       return plan;
@@ -379,9 +405,10 @@ export class AiService {
     return { plan: result.data as Plan, error: null };
   }
 
-  /** 调用 DeepSeek(非流式,等待完整 JSON 返回;90 秒超时兜底,防止 API 挂起导致 SSE 永不结束) */
+  /** 调用 DeepSeek(非流式,等待完整 JSON 返回;90 秒超时兜底 + 客户端断开即中断,防止 API 挂起导致 SSE 永不结束) */
   private async callModel(
     messages: OpenAI.ChatCompletionMessageParam[],
+    signal?: AbortSignal,
   ): Promise<string> {
     const completion = await this.getClient().chat.completions.create(
       {
@@ -389,7 +416,11 @@ export class AiService {
         messages,
         response_format: { type: 'json_object' },
       },
-      { signal: AbortSignal.timeout(90_000) },
+      {
+        signal: signal
+          ? AbortSignal.any([AbortSignal.timeout(90_000), signal])
+          : AbortSignal.timeout(90_000),
+      },
     );
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('模型返回为空');

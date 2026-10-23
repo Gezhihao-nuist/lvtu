@@ -9,6 +9,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
@@ -23,7 +24,9 @@ export class AuthController {
 
   constructor(private readonly auth: AuthService) {}
 
+  /** 注册/登录严格限流:每 IP 每分钟 5 次,防暴力破解与批量注册 */
   @Post('register')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async register(
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) res: Response,
@@ -35,6 +38,7 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async login(
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
@@ -46,6 +50,7 @@ export class AuthController {
 
   @Post('refresh')
   @HttpCode(200)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   async refresh(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
@@ -61,7 +66,14 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(204)
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const token = (req.cookies as Record<string, string | undefined>)[
+      'refresh_token'
+    ];
+    await this.auth.logout(token);
     res.clearCookie('refresh_token', { path: '/' });
   }
 

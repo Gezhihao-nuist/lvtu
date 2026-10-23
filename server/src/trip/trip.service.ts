@@ -172,6 +172,7 @@ export class TripService {
   /**
    * 预算汇总:按类型/按天聚合条目预计花费,计算人均。
    * 成员数 = 协作者记录数(owner 也在 collaborators 表里,无需 +1)。
+   * 金额先转整数分再累加,避免 Decimal→number 后的浮点误差。
    */
   async budget(id: string) {
     const trip = await this.prisma.trip.findUnique({
@@ -183,7 +184,7 @@ export class TripService {
     });
     if (!trip) throw new NotFoundException('行程不存在');
 
-    const byType: Record<string, number> = {
+    const byTypeCents: Record<string, number> = {
       SPOT: 0,
       FOOD: 0,
       HOTEL: 0,
@@ -191,29 +192,36 @@ export class TripService {
     };
     let costedItemCount = 0;
     const byDay = trip.days.map((d) => {
-      let total = 0;
+      let cents = 0;
       for (const it of d.items) {
         const c = toNum(it.cost);
         if (c !== null) {
-          total += c;
-          byType[it.type] = (byType[it.type] ?? 0) + c;
+          const itemCents = Math.round(c * 100);
+          cents += itemCents;
+          byTypeCents[it.type] = (byTypeCents[it.type] ?? 0) + itemCents;
           costedItemCount++;
         }
       }
-      return { dayIndex: d.dayIndex, date: dateKey(d.date), total };
+      return { dayIndex: d.dayIndex, date: dateKey(d.date), cents };
     });
-    const plannedTotal = byDay.reduce((s, d) => s + d.total, 0);
+    const plannedCents = byDay.reduce((s, d) => s + d.cents, 0);
     const itemCount = trip.days.reduce((s, d) => s + d.items.length, 0);
     const memberCount = Math.max(trip._count.collaborators, 1);
     return {
       budgetTotal: toNum(trip.budgetTotal),
-      plannedTotal,
-      byType,
-      byDay,
+      plannedTotal: plannedCents / 100,
+      byType: Object.fromEntries(
+        Object.entries(byTypeCents).map(([k, v]) => [k, v / 100]),
+      ),
+      byDay: byDay.map((d) => ({
+        dayIndex: d.dayIndex,
+        date: d.date,
+        total: d.cents / 100,
+      })),
       itemCount,
       costedItemCount,
       memberCount,
-      perPerson: plannedTotal / memberCount,
+      perPerson: plannedCents / memberCount / 100,
     };
   }
 
@@ -462,14 +470,31 @@ export class TripService {
     return { ...it, cost: toNum(it.cost) };
   }
 
+  /**
+   * 白名单序列化:显式挑选可外发字段。
+   * /share/:id 免登录公开访问,绝不能用 ...trip 展开
+   * (会把 ownerId、ydocState(Bytes → 巨大 Buffer JSON)一并泄露)。
+   */
   private serializeTrip(
     trip: Trip & { days: (TripDay & { items: ItineraryItem[] })[] },
   ) {
     return {
-      ...trip,
+      id: trip.id,
+      title: trip.title,
+      destination: trip.destination,
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      coverUrl: trip.coverUrl,
       budgetTotal: toNum(trip.budgetTotal),
+      visibility: trip.visibility,
+      createdAt: trip.createdAt,
+      updatedAt: trip.updatedAt,
       days: trip.days.map((d) => ({
-        ...d,
+        id: d.id,
+        tripId: d.tripId,
+        dayIndex: d.dayIndex,
+        date: d.date,
+        note: d.note,
         items: d.items.map((i) => this.serializeItem(i)),
       })),
     };

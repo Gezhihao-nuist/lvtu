@@ -129,6 +129,8 @@ async function mapLimitIdx<T>(
 @Injectable()
 export class GeoService {
   private static readonly TTL = 10 * 60 * 1000;
+  /** 缓存条目硬上限:key 含用户任意输入,无界会被人为撑爆内存;满了淘汰最老一条 */
+  private static readonly MAX_ENTRIES = 500;
   private readonly cache = new Map<string, CacheEntry>();
   private writes = 0;
 
@@ -412,6 +414,10 @@ export class GeoService {
   }
 
   private setCached(key: string, data: unknown) {
+    if (this.cache.size >= GeoService.MAX_ENTRIES && !this.cache.has(key)) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
+    }
     this.cache.set(key, { data, expireAt: Date.now() + GeoService.TTL });
     // 每 100 次写入顺手清理过期项
     if (++this.writes % 100 === 0) {

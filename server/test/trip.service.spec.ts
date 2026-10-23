@@ -349,6 +349,36 @@ describe('TripService', () => {
       expect(result.title).toBe('漠河之旅');
     });
 
+    it('白名单序列化:不泄露 ownerId / ydocState 等内部字段', async () => {
+      prismaMock.trip.findUnique.mockResolvedValue({
+        id: 't1',
+        title: '漠河之旅',
+        visibility: 'LINK',
+        budgetTotal: null,
+        ownerId: 'u-secret',
+        ydocState: Buffer.from('huge-binary'),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        days: [
+          {
+            id: 'd1',
+            tripId: 't1',
+            dayIndex: 0,
+            date: new Date('2026-11-01T00:00:00.000Z'),
+            note: null,
+            items: [],
+          },
+        ],
+      });
+      const result = (await service.publicDetail('t1')) as Record<
+        string,
+        unknown
+      >;
+      expect(result).not.toHaveProperty('ownerId');
+      expect(result).not.toHaveProperty('ydocState');
+      expect(result).toHaveProperty('days');
+    });
+
     it('visibility=PRIVATE:NotFoundException(分享已关闭)', async () => {
       prismaMock.trip.findUnique.mockResolvedValue({
         id: 't1',
