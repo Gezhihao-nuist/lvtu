@@ -32,6 +32,12 @@ export class WeatherQueryDto {
   city: string;
 }
 
+export class DistrictQueryDto {
+  @IsString()
+  @MinLength(1)
+  city: string;
+}
+
 export class RouteQueryDto {
   @Matches(LNG_LAT, { message: 'from 应为 lng,lat 格式' })
   from: string;

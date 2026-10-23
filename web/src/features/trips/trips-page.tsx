@@ -2,10 +2,12 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { CalendarDays, Copy, MapPin, MoreVertical, Plus, Route, Trash2, Wallet } from 'lucide-react'
+import { CalendarDays, Copy, MapPin, MoreVertical, Plus, Route, Trash2, Wallet, X } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange, formatMoney } from '../../lib/format'
 import { cityCover, FALLBACK_COVER } from './city-covers'
+import { destinationMatches, uniqueDestinations } from './footprint'
+import { FootprintMap } from './footprint-map'
 import type { TripSummary } from '../../types'
 import { AppHeader } from '../../components/layout/app-header'
 import { Button } from '../../components/ui/button'
@@ -138,6 +140,7 @@ export default function TripsPage() {
   const queryClient = useQueryClient()
   const [newOpen, setNewOpen] = useState(false)
   const [deleting, setDeleting] = useState<TripSummary | null>(null)
+  const [cityFilter, setCityFilter] = useState<string | null>(null)
 
   const tripsQuery = useQuery({
     queryKey: ['trips'],
@@ -166,6 +169,9 @@ export default function TripsPage() {
   })
 
   const trips = tripsQuery.data
+  const destinations = trips ? uniqueDestinations(trips) : []
+  const visibleTrips =
+    trips && cityFilter ? trips.filter((t) => destinationMatches(t.destination, cityFilter)) : trips
 
   return (
     <div className="min-h-screen bg-zinc-50">
@@ -198,16 +204,33 @@ export default function TripsPage() {
             }
           />
         ) : trips && trips.length > 0 ? (
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {trips.map((trip) => (
-              <TripCard
-                key={trip.id}
-                trip={trip}
-                onCopy={() => copyMutation.mutate(trip.id)}
-                onDelete={() => setDeleting(trip)}
-              />
-            ))}
-          </div>
+          <>
+            <FootprintMap
+              destinations={destinations}
+              activeCity={cityFilter}
+              onSelectCity={setCityFilter}
+            />
+            {cityFilter && (
+              <button
+                type="button"
+                onClick={() => setCityFilter(null)}
+                className="mb-4 flex items-center gap-1.5 rounded-full bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 transition-colors hover:bg-accent-100"
+              >
+                正在筛选:{cityFilter}
+                <X className="size-3" />
+              </button>
+            )}
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              {visibleTrips!.map((trip) => (
+                <TripCard
+                  key={trip.id}
+                  trip={trip}
+                  onCopy={() => copyMutation.mutate(trip.id)}
+                  onDelete={() => setDeleting(trip)}
+                />
+              ))}
+            </div>
+          </>
         ) : (
           <EmptyState
             icon={Route}

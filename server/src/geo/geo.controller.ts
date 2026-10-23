@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import {
+  DistrictQueryDto,
   PoiQueryDto,
   RouteQueryDto,
   RoutesBodyDto,
@@ -29,6 +30,13 @@ export class GeoController {
   async weather(@Query() query: WeatherQueryDto) {
     const casts = await this.geo.getWeather(query.city);
     return { casts };
+  }
+
+  /** 城市中心坐标(足迹地图用) */
+  @Get('district')
+  async district(@Query() query: DistrictQueryDto) {
+    const center = await this.geo.getCityCenter(query.city);
+    return { center };
   }
 
   @Get('route')

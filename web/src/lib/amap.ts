@@ -21,6 +21,7 @@ export interface AMapMarker {
   setContent(content: string | HTMLElement): void
   setzIndex?(z: number): void
   setAnimation?(animation: string): void
+  on?(event: string, cb: () => void): void
 }
 
 export interface AMapPolyline {
