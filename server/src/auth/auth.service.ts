@@ -45,10 +45,16 @@ export class AuthService {
     return this.buildAuthPayload(user);
   }
 
+  /** 并发宽限窗:同一 token 30 秒内的重复使用视为多标签页并发刷新,容忍;超窗重放 = 被盗 */
+  private static readonly REUSE_GRACE_MS = 30_000;
+
   /**
    * 校验 refresh token 并轮换签发新令牌对。
-   * 服务端只认会话表里的 sha256 哈希:JWT 合法但哈希不存在 = 旧 token 重用(可能被盗),
-   * 立即吊销该用户全部会话;命中即删除旧行(一次性),再签发新令牌对。
+   * 会话行只打 consumedAt 标记不删除(原子 updateMany 消费,并发安全):
+   * - 哈希不存在:不明 token(可能伪造)→ 吊销全部会话;
+   * - 消费成功(并发中只有一方能抢到):正常轮换;
+   * - 已被消费但在宽限窗内:多标签页并发竞态,容忍签发;
+   * - 已被消费且超宽限窗:旧 token 重放(可能被盗)→ 吊销全部会话。
    */
   async refresh(token: string) {
     let payload: { sub: string; type?: string };
@@ -70,7 +76,6 @@ export class AuthService {
         where: { id: payload.sub },
       });
       if (!user) throw new UnauthorizedException('用户不存在');
-      // 重用检测:吊销全部会话
       await this.prisma.refreshToken.deleteMany({
         where: { userId: payload.sub },
       });
@@ -80,8 +85,28 @@ export class AuthService {
       await this.prisma.refreshToken.delete({ where: { id: session.id } });
       throw new UnauthorizedException('refresh token 无效或已过期');
     }
-    await this.prisma.refreshToken.delete({ where: { id: session.id } });
-    // 顺手清理该用户其他过期会话
+
+    // 原子消费:并发场景只有一个请求能把 consumedAt 从 null 打上标记
+    const consumed = await this.prisma.refreshToken.updateMany({
+      where: { id: session.id, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+    if (consumed.count === 0) {
+      // 已被消费过:重新读行判断是并发竞态还是超窗重放
+      const fresh = await this.prisma.refreshToken.findUnique({
+        where: { id: session.id },
+      });
+      const consumedAgo = fresh?.consumedAt
+        ? Date.now() - fresh.consumedAt.getTime()
+        : Number.POSITIVE_INFINITY;
+      if (!fresh || consumedAgo > AuthService.REUSE_GRACE_MS) {
+        await this.prisma.refreshToken.deleteMany({
+          where: { userId: session.userId },
+        });
+        throw new UnauthorizedException('登录状态异常,请重新登录');
+      }
+    }
+    // 顺手清理该用户过期会话
     await this.prisma.refreshToken.deleteMany({
       where: { userId: session.userId, expiresAt: { lt: new Date() } },
     });

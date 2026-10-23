@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import type { TripDetail } from '../../types'
@@ -28,12 +28,15 @@ export function EditDatesDialog({ open, onClose, trip }: EditDatesDialogProps) {
   const [start, setStart] = useState(key(trip.startDate))
   const [end, setEnd] = useState(key(trip.endDate))
 
-  // 每次打开重置为当前行程日期
+  // 仅在弹窗由关到开的瞬间重置为当前行程日期;
+  // 打开期间后台 invalidate(locate/AI 生成/重排)导致的 trip 刷新不能冲掉用户输入
+  const wasOpen = useRef(false)
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpen.current) {
       setStart(key(trip.startDate))
       setEnd(key(trip.endDate))
     }
+    wasOpen.current = open
   }, [open, trip.startDate, trip.endDate])
 
   /** 新区间外的现有天(将被删除)及其包含的安排数 */

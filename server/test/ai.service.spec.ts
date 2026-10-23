@@ -84,6 +84,12 @@ describe('AiService', () => {
       expect(error).toContain('不是合法 JSON');
     });
 
+    it('空 days 数组:plan 为 null(防空行程静默清空已有安排)', () => {
+      const { plan, error } = service['parsePlan']('{"days":[]}');
+      expect(plan).toBeNull();
+      expect(error).not.toBeNull();
+    });
+
     it('是 JSON 但字段类型错(dayIndex 是字符串):plan 为 null,error 非空', () => {
       const bad = JSON.stringify({
         days: [
@@ -304,6 +310,47 @@ describe('AiService', () => {
       await expect(
         service.fetchUrlText('https://x.example.com/a'),
       ).rejects.toThrow('请直接粘贴攻略文字');
+    });
+
+    it('重定向中间跳打到内网:拦截,不发出第二跳请求', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 302,
+        headers: new Headers({ location: 'http://169.254.169.254/latest' }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(
+        service.fetchUrlText('https://evil.example.com/a'),
+      ).rejects.toThrow('不可访问');
+      // 只发出第一跳,内网地址的请求从未发出
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('安全重定向:跟随跳转后正常解析', async () => {
+      const page =
+        '<html><head><title>攻略</title></head><body>' +
+        '<p>第一天 天安门 故宫 景山 烤鸭 王府井 三里屯 后海 南锣鼓巷 什刹海</p>'.repeat(
+          10,
+        ) +
+        '</body></html>';
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 301,
+          headers: new Headers({ location: 'https://example.com/final' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          body: null,
+          text: async () => page,
+        });
+      vi.stubGlobal('fetch', fetchMock);
+      const r = await service.fetchUrlText('https://example.com/start');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(r.title).toBe('攻略');
     });
   });
 

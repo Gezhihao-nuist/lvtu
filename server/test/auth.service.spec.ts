@@ -37,6 +37,7 @@ describe('AuthService', () => {
       findUnique: ReturnType<typeof vi.fn>;
       delete: ReturnType<typeof vi.fn>;
       deleteMany: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
     };
   };
   let configMock: { get: ReturnType<typeof vi.fn> };
@@ -51,6 +52,7 @@ describe('AuthService', () => {
         findUnique: vi.fn(),
         delete: vi.fn(),
         deleteMany: vi.fn(),
+        updateMany: vi.fn(),
       },
     };
     configMock = { get: vi.fn().mockReturnValue(undefined) };
@@ -153,13 +155,17 @@ describe('AuthService', () => {
   });
 
   describe('refresh(服务端会话轮换)', () => {
-    const sessionOf = (token: string, expired = false) => ({
+    const sessionOf = (
+      token: string,
+      opts: { expired?: boolean; consumedAt?: Date | null } = {},
+    ) => ({
       id: 'rt1',
       userId: 'u1',
       tokenHash: sha256(token),
       expiresAt: new Date(
-        Date.now() + (expired ? -1000 : 7 * 24 * 3600 * 1000),
+        Date.now() + (opts.expired ? -1000 : 7 * 24 * 3600 * 1000),
       ),
+      consumedAt: opts.consumedAt ?? null,
       createdAt: new Date(),
       user: fakeUser(),
     });
@@ -179,15 +185,17 @@ describe('AuthService', () => {
       );
     });
 
-    it('合法会话 → 轮换:旧哈希删除 + 新会话落库 + 返回新令牌对', async () => {
+    it('合法会话 → 轮换:原子消费(打 consumedAt 标记)+ 新会话落库 + 返回新令牌对', async () => {
       const token = jwt.sign({ sub: 'u1', type: 'refresh' });
       prismaMock.refreshToken.findUnique.mockResolvedValue(sessionOf(token));
+      prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 1 });
       const result = await service.refresh(token);
       expect(result.accessToken).toBeTruthy();
       expect(result.refreshToken).toBeTruthy();
-      // 旧会话一次性作废
-      expect(prismaMock.refreshToken.delete).toHaveBeenCalledWith({
-        where: { id: 'rt1' },
+      // 原子消费标记
+      expect(prismaMock.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { id: 'rt1', consumedAt: null },
+        data: { consumedAt: expect.any(Date) },
       });
       // 新会话落库
       expect(prismaMock.refreshToken.create).toHaveBeenCalledTimes(1);
@@ -199,7 +207,7 @@ describe('AuthService', () => {
       expect(payload.type).toBe('refresh');
     });
 
-    it('JWT 合法但服务端无此会话(旧 token 重用)→ 吊销全部会话 + 401', async () => {
+    it('JWT 合法但服务端无此会话(不明 token)→ 吊销全部会话 + 401', async () => {
       const token = jwt.sign({ sub: 'u1', type: 'refresh' });
       prismaMock.refreshToken.findUnique.mockResolvedValue(null);
       prismaMock.user.findUnique.mockResolvedValue(fakeUser());
@@ -215,13 +223,46 @@ describe('AuthService', () => {
     it('会话已过期 → 删除该行 + 401', async () => {
       const token = jwt.sign({ sub: 'u1', type: 'refresh' });
       prismaMock.refreshToken.findUnique.mockResolvedValue(
-        sessionOf(token, true),
+        sessionOf(token, { expired: true }),
       );
       await expect(service.refresh(token)).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
       expect(prismaMock.refreshToken.delete).toHaveBeenCalledWith({
         where: { id: 'rt1' },
+      });
+      expect(prismaMock.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('并发竞态:同一 token 在 30s 宽限窗内被重复使用 → 容忍,照常签发新对(误吊销修复)', async () => {
+      const token = jwt.sign({ sub: 'u1', type: 'refresh' });
+      const session = sessionOf(token, {
+        consumedAt: new Date(Date.now() - 5_000),
+      });
+      prismaMock.refreshToken.findUnique.mockResolvedValue(session);
+      // 原子消费失败(已被并发方标记)
+      prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+      const result = await service.refresh(token);
+      expect(result.accessToken).toBeTruthy();
+      expect(prismaMock.refreshToken.create).toHaveBeenCalledTimes(1);
+      // 关键:不能误吊销
+      expect(prismaMock.refreshToken.deleteMany).not.toHaveBeenCalledWith({
+        where: { userId: 'u1' },
+      });
+    });
+
+    it('超窗重放:consumedAt 超过 30s 的旧 token 再次出现 → 判定重用,吊销全部会话 + 401', async () => {
+      const token = jwt.sign({ sub: 'u1', type: 'refresh' });
+      const session = sessionOf(token, {
+        consumedAt: new Date(Date.now() - 60_000),
+      });
+      prismaMock.refreshToken.findUnique.mockResolvedValue(session);
+      prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+      await expect(service.refresh(token)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(prismaMock.refreshToken.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'u1' },
       });
       expect(prismaMock.refreshToken.create).not.toHaveBeenCalled();
     });

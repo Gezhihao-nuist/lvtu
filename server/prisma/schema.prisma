@@ -40,14 +40,16 @@ model User {
   refreshTokens RefreshToken[]
 }
 
-/** refresh token 会话表:存 sha256 哈希,轮换时作废旧行;JWT 合法但哈希不存在 = 重用,全端吊销 */
+/** refresh token 会话表:存 sha256 哈希,消费打 consumedAt 标记(不删行);超宽限窗的重放 = 重用,全端吊销 */
 model RefreshToken {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash String   @unique
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  /** 首次使用时间;30s 宽限窗内的再次使用视为并发竞态容忍,超窗视为 token 重用被盗 */
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
 
   @@index([userId])
 }

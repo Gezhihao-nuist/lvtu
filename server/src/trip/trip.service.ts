@@ -426,6 +426,10 @@ export class TripService {
     if (!anchor) {
       anchor = await this.geo.getCityCenter(destination).catch(() => null);
     }
+    if (!anchor) {
+      // 锚点彻底缺失时不盲绑第一个候选(防错到几千公里外同名地点)
+      throw new NotFoundException('暂时无法确定方位,请稍后再试');
+    }
 
     let pois: Awaited<ReturnType<GeoService['searchPoi']>> = [];
     try {

@@ -46,12 +46,15 @@ const itemSchema = z.object({
 });
 
 const planSchema = z.object({
-  days: z.array(
-    z.object({
-      dayIndex: z.number().int().nonnegative(),
-      items: z.array(itemSchema).min(1),
-    }),
-  ),
+  // days 必须非空:否则空 plan 会过校验,applyPlan 先删后建 0 条,行程被静默清空
+  days: z
+    .array(
+      z.object({
+        dayIndex: z.number().int().nonnegative(),
+        items: z.array(itemSchema).min(1),
+      }),
+    )
+    .min(1),
 });
 
 type PlanItem = z.infer<typeof itemSchema> & {
@@ -260,35 +263,65 @@ export class AiService {
   /**
    * 抓取攻略网页正文(供「导入攻略」预填)。
    * 反爬/需登录站点(小红书等)大概率失败,抛 422 引导用户改用手动粘贴;
-   * 重定向后的最终地址也要过 SSRF 检查,防 302 绕过。
+   * 重定向逐跳手动跟随,每一跳都过 SSRF 检查(自动跟随会让中间跳绕过校验);
+   * 正文按流读取,超 2MB 立即中断,防超大页面撑内存。
    */
   async fetchUrlText(
     rawUrl: string,
   ): Promise<{ title: string | null; text: string }> {
-    assertFetchable(rawUrl);
-    let res: globalThis.Response;
-    try {
-      res = await fetch(rawUrl, {
-        signal: AbortSignal.timeout(10_000),
-        headers: {
-          'user-agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-          accept: 'text/html,application/xhtml+xml',
-        },
-      });
-    } catch {
-      throw new UnprocessableEntityException(
-        '抓取失败(超时或目标拒绝访问),请直接粘贴攻略文字',
-      );
+    let url = rawUrl;
+    assertFetchable(url);
+    let res: globalThis.Response | null = null;
+    const headers = {
+      'user-agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+      accept: 'text/html,application/xhtml+xml',
+    };
+    // 逐跳跟随(最多 5 跳),每跳重新做 SSRF 校验
+    for (let hop = 0; hop < 5; hop++) {
+      try {
+        res = await fetch(url, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(10_000),
+          headers,
+        });
+      } catch {
+        throw new UnprocessableEntityException(
+          '抓取失败(超时或目标拒绝访问),请直接粘贴攻略文字',
+        );
+      }
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location) break;
+        url = new URL(location, url).toString();
+        assertFetchable(url);
+        res = null;
+        continue;
+      }
+      break;
     }
-    if (res.url && res.url !== rawUrl) assertFetchable(res.url);
+    if (!res) {
+      throw new UnprocessableEntityException('重定向次数过多,请直接粘贴攻略文字');
+    }
     if (!res.ok) {
       throw new UnprocessableEntityException(
         `抓取失败(HTTP ${res.status}),请直接粘贴攻略文字`,
       );
     }
-    // 截取前 2MB 再解析,防超大页面撑内存
-    const html = (await res.text()).slice(0, 2_000_000);
+    // 流式读取,超 2MB 即中断
+    let html = '';
+    const reader = res.body?.getReader();
+    if (reader) {
+      const decoder = new TextDecoder();
+      while (html.length < 2_000_000) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        html += decoder.decode(value, { stream: true });
+      }
+      await reader.cancel().catch(() => undefined);
+    } else {
+      html = (await res.text()).slice(0, 2_000_000);
+    }
     const title =
       /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1]?.trim() ?? null;
     const text = htmlToText(html).slice(0, 15_000);
@@ -389,6 +422,10 @@ export class AiService {
       oneDay.days[0].items,
       `规划 Day ${day.dayIndex + 1}(${dateStr})`,
     );
+    if (itemCount < 0) {
+      emit({ type: 'error', message: '这一天已被删除,未写入安排' });
+      return;
+    }
     emit({ type: 'done', dayCount: 1, itemCount });
   }
 
@@ -886,7 +923,7 @@ export class AiService {
     });
   }
 
-  /** 事务内重建某一天(而非整趟)的 items,并写入一条 AI 对话记录 */
+  /** 事务内重建某一天(而非整趟)的 items,并写入一条 AI 对话记录;天已不存在返回 -1 */
   private async applyDayPlan(
     tripId: string,
     dayId: string,
@@ -894,6 +931,9 @@ export class AiService {
     userText: string,
   ) {
     return this.prisma.$transaction(async (tx) => {
+      // 长 SSE 生成期间该天可能已被用户删掉(编辑日期缩短/删最后一天),先校验防外键 500
+      const day = await tx.tripDay.findUnique({ where: { id: dayId } });
+      if (!day) return -1;
       await tx.itineraryItem.deleteMany({ where: { dayId } });
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
