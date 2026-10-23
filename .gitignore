@@ -25,3 +25,4 @@ dist/
 
 # 测试覆盖
 coverage/
+__pycache__/

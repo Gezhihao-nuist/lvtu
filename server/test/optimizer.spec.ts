@@ -343,4 +343,53 @@ describe('reflowDayTimes(交通耗时感知的时间轴)', () => {
     expect(items[0]!.startTime).toBe('09:00');
     expect(items[0]!.endTime).toBe('10:30'); // 90 分钟原时长不变
   });
+
+  it('满整天(≥4 项)却 14:30 才开始:重置到 8:30 起跑(AI 原始时间不可信)', () => {
+    const items = [
+      mk('SPOT', '景山公园', 116.39, 39.92, '14:30', '16:00'),
+      mk('SPOT', '故宫', 116.397, 39.916, '16:15', '19:30'),
+      mk('FOOD', '午餐', 116.4, 39.915, '19:45', '20:45'),
+      mk('SPOT', '天安门', 116.391, 39.908, '21:09', '22:09'),
+      mk('FOOD', '晚餐', 116.41, 39.91, '22:33', '23:33'),
+    ];
+    reflowDayTimes(items);
+    expect(items[0]!.startTime).toBe('08:30');
+    // 所有时间合法且不溢出午夜
+    for (const it of items) {
+      expect(toMin(it.startTime)!).toBeLessThanOrEqual(23 * 60);
+      const e = toMin(it.endTime);
+      if (e !== null) {
+        expect(e).toBeLessThanOrEqual(23 * 60 + 30);
+        expect(e).toBeGreaterThan(toMin(it.startTime)!);
+      }
+    }
+  });
+
+  it('少量项的半天行程不重置(3 项 14:00 开始保持原样)', () => {
+    const items = [
+      mk('SPOT', '下午茶', 116.0, 30.0, '14:00', '15:00'),
+      mk('SPOT', 'B', 116.01, 30.0),
+      mk('HOTEL', '住宿', 116.0, 30.01),
+    ];
+    reflowDayTimes(items);
+    expect(items[0]!.startTime).toBe('14:00');
+  });
+
+  it('极端时长级联也不溢出午夜(无 24:xx 非法时间)', () => {
+    const items = [
+      mk('SPOT', 'A', 116.0, 30.0, '10:00', '16:00'),
+      mk('SPOT', 'B', 116.01, 30.0),
+      mk('FOOD', '晚餐', 116.02, 30.0),
+      mk('SPOT', 'C', 116.0, 30.02),
+      mk('HOTEL', '住宿', 116.0, 30.01),
+    ];
+    reflowDayTimes(items);
+    for (const it of items) {
+      const s = toMin(it.startTime)!;
+      expect(s).toBeLessThanOrEqual(23 * 60);
+      expect(it.startTime).not.toMatch(/^2[4-9]:/);
+      const e = toMin(it.endTime);
+      if (e !== null) expect(e).toBeLessThanOrEqual(23 * 60 + 30);
+    }
+  });
 });

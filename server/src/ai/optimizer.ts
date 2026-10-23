@@ -355,6 +355,8 @@ export function weatherAwareSwap(
  * Schedule-third:按顺序重排一天的时间轴。
  * 项间间隔 = 交通耗时估算(步行 4.5km/h / 车行 27km/h,含绕行系数)
  * + 10 分钟缓冲,钳制在 15-90 分钟;无坐标时回退 30 分钟固定缓冲。
+ * 防溢出:满整天(≥4 项)却中午后才开始的,视为 AI 原始时间不可信重置到 8:30;
+ * 所有时间封顶 23:30 收尾,绝不允许出现 "24:10" 这类溢出午夜的非法时间。
  */
 export function reflowDayTimes(items: OptItem[]): void {
   const defaultDur: Record<OptItem['type'], number> = {
@@ -363,11 +365,14 @@ export function reflowDayTimes(items: OptItem[]): void {
     TRANSPORT: 45,
     HOTEL: 0,
   };
+  const DAY_END = 23 * 60 + 30;
+  const LAST_START = DAY_END - 30;
   const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
   const toHHmm = (m: number) =>
     `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
   let cursor = items[0]?.startTime ? toMin(items[0].startTime) : 8 * 60 + 30;
+  if (items.length >= 4 && cursor > 11 * 60) cursor = 8 * 60 + 30;
   for (let i = 0; i < items.length; i++) {
     const it = items[i]!;
     let dur = defaultDur[it.type];
@@ -375,9 +380,13 @@ export function reflowDayTimes(items: OptItem[]): void {
       const d = toMin(it.endTime) - toMin(it.startTime);
       if (d >= 15 && d <= 360) dur = d;
     }
-    it.startTime = toHHmm(cursor);
-    it.endTime = it.type === 'HOTEL' ? null : toHHmm(cursor + dur);
-    cursor += dur;
+    const start = Math.min(cursor, LAST_START);
+    it.startTime = toHHmm(start);
+    it.endTime =
+      it.type === 'HOTEL'
+        ? null
+        : toHHmm(Math.min(Math.max(start + dur, start + 15), DAY_END));
+    cursor = (it.endTime ? toMin(it.endTime) : start);
     const next = items[i + 1];
     if (next) {
       const a = ptOf(it);
