@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, CircleAlert, ClipboardList, FileDown, HeartPulse, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
+import { ArrowLeft, CalendarDays, CircleAlert, ClipboardList, FileDown, HeartPulse, Pencil, Share2, Sparkles, Wallet } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatDateRange } from '../../lib/format'
 import type { TripDetail, WeatherCast } from '../../types'
@@ -15,8 +15,23 @@ import { AiPanel } from './ai-panel'
 import { MapView } from './map-view'
 import { BudgetDialog } from './budget-dialog'
 import { ChecklistDialog } from './checklist-dialog'
+import { EditDatesDialog } from './edit-dates-dialog'
 import { HealthDialog } from './health-dialog'
 import { ShareDialog } from './share-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog'
+
+/** ISO 日期字符串 ±N 天(UTC,返回 YYYY-MM-DD) */
+function shiftDate(iso: string, delta: number): string {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10)
+}
 
 function InlineTitle({ tripId, value }: { tripId: string; value: string }) {
   const queryClient = useQueryClient()
@@ -84,6 +99,8 @@ export default function TripEditorPage() {
   const [shareOpen, setShareOpen] = useState(false)
   const [healthOpen, setHealthOpen] = useState(false)
   const [checklistOpen, setChecklistOpen] = useState(false)
+  const [datesOpen, setDatesOpen] = useState(false)
+  const [removeDayConfirm, setRemoveDayConfirm] = useState(false)
 
   const tripQuery = useQuery({
     queryKey: ['trip', id],
@@ -117,6 +134,37 @@ export default function TripEditorPage() {
       api(`/trips/${id}/items/${itemId}/locate`, { method: 'POST' }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['trip', id] }),
   })
+
+  // 自定义天数:改 endDate,后端 syncDays 自动补建/级联删除(30 天上限)
+  const daysMutation = useMutation({
+    mutationFn: (endDate: string) =>
+      api(`/trips/${id}`, { method: 'PATCH', body: JSON.stringify({ endDate }) }),
+    onError: (err) =>
+      toast.error(err instanceof Error && err.message ? err.message : '调整天数失败,请稍后再试'),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['trip', id] })
+      void queryClient.invalidateQueries({ queryKey: ['trips'] })
+    },
+  })
+  const lastDay = days[days.length - 1]
+  const addDay = () => {
+    if (!lastDay) return
+    if (days.length >= 30) {
+      toast.error('行程最多 30 天')
+      return
+    }
+    daysMutation.mutate(shiftDate(lastDay.date, 1))
+  }
+  const removeLastDay = () => {
+    if (days.length < 2 || !lastDay) return
+    if (lastDay.items.length > 0) setRemoveDayConfirm(true)
+    else daysMutation.mutate(shiftDate(lastDay.date, -1))
+  }
+  const confirmRemoveLastDay = () => {
+    if (!lastDay) return
+    setRemoveDayConfirm(false)
+    daysMutation.mutate(shiftDate(lastDay.date, -1))
+  }
   const handleLocateItem = (itemId: string) => {
     const item = days.flatMap((d) => d.items).find((i) => i.id === itemId)
     if (!item) return
@@ -175,9 +223,16 @@ export default function TripEditorPage() {
           <ArrowLeft className="size-4" />
         </Link>
         <InlineTitle tripId={trip.id} value={trip.title} />
-        <span className="tnum hidden shrink-0 text-sm text-zinc-500 md:block">
+        <button
+          type="button"
+          onClick={() => setDatesOpen(true)}
+          title="编辑行程日期/天数"
+          className="tnum group hidden shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-800 md:flex"
+        >
+          <CalendarDays className="size-3.5" />
           {formatDateRange(trip.startDate, trip.endDate)}
-        </span>
+          <Pencil className="size-3 text-zinc-400 opacity-0 transition-opacity group-hover:opacity-100" />
+        </button>
         <div className="ml-auto flex items-center gap-1.5">
           <Button size="icon" variant="outline" title="分享行程" onClick={() => setShareOpen(true)}>
             <Share2 />
@@ -209,7 +264,15 @@ export default function TripEditorPage() {
       {/* 主体:左栏时间轴 + 右栏地图 */}
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[440px] shrink-0 flex-col border-r border-zinc-200/70 bg-white">
-          <DayTabs days={days} activeIndex={activeDay?.dayIndex ?? 0} onSelect={setActiveDayIndex} weatherByDate={weatherByDate} />
+          <DayTabs
+            days={days}
+            activeIndex={activeDay?.dayIndex ?? 0}
+            onSelect={setActiveDayIndex}
+            weatherByDate={weatherByDate}
+            onAddDay={addDay}
+            onRemoveLastDay={removeLastDay}
+            dayMutating={daysMutation.isPending}
+          />
           <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50/60">
             {activeDay && (
               <Timeline trip={trip} day={activeDay} onHoverItem={setHoveredItemId} onLocate={handleLocateItem} />
@@ -226,6 +289,27 @@ export default function TripEditorPage() {
       <ShareDialog open={shareOpen} onClose={() => setShareOpen(false)} trip={trip} />
       <HealthDialog open={healthOpen} onClose={() => setHealthOpen(false)} trip={trip} />
       <ChecklistDialog open={checklistOpen} onClose={() => setChecklistOpen(false)} trip={trip} />
+      <EditDatesDialog open={datesOpen} onClose={() => setDatesOpen(false)} trip={trip} />
+
+      {/* 删除最后一天确认(有安排时) */}
+      <Dialog open={removeDayConfirm} onOpenChange={setRemoveDayConfirm}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>删除 Day {lastDay ? lastDay.dayIndex + 1 : ''}?</DialogTitle>
+            <DialogDescription>
+              这一天有 {lastDay?.items.length ?? 0} 个安排,删除后它们会一并移除,此操作不可撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setRemoveDayConfirm(false)}>
+              取消
+            </Button>
+            <Button variant="danger" loading={daysMutation.isPending} onClick={confirmRemoveLastDay}>
+              删除这一天
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
